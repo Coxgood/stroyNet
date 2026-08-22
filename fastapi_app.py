@@ -65,7 +65,7 @@ async def process_ollama_reply_task(payload: str):
             now = datetime.now()
             if messenger_uid in last_reply_time:
                 elapsed = (now - last_reply_time[messenger_uid]).total_seconds()
-                if elapsed < 300:  # 5 минут
+                if elapsed < 120:  # 2 минуты
                     logger.info(f"⏳ Пропускаем ответ {messenger_uid}: прошло {elapsed:.0f} секунд")
                     return
 
