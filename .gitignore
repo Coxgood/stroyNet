@@ -1,0 +1,14 @@
+*.log
+*.pyc
+__pycache__/
+.env
+.venv/
+config.py
+max_bot.log
+listener.log
+*.db
+*.sqlite3
+.DS_Store
+# Локальные скрипты для БД (не коммитить!)
+update_db.py
+*.sql
