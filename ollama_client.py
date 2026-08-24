@@ -10,7 +10,7 @@ logger = logging.getLogger("uvicorn.error")
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 
 
-async def parse_with_ollama(text: str, mode: str = "chat", model_name: str = "qwen2.5:1.5b") -> str:
+async def parse_with_ollama(text: str, mode: str = "chat", model_name: str = "qwen2.5:7b") -> str:
     """Отправляет запрос в Ollama и ВСЕГДА возвращает живой текстовый ответ (строку)."""
 
     payload = {
