@@ -1,306 +1,161 @@
-# filename: fastapi_app.py
-# description: основной API для приёма сообщений и парсинга через Ollama
+# fastapi_app.py
+import os
 import asyncio
-import asyncpg
-import aiohttp
 import json
-import logging
-from datetime import datetime
-from fastapi import FastAPI, status, HTTPException
-from pydantic import BaseModel
-from typing import Optional
-from config import MAX_TOKEN, MAX_BASE_URL, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
-from database import db
-from ollama_client import parse_with_ollama
-from validators import fast_surface_validate
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Response, status
+import asyncpg
 
-# Используем системный логгер Uvicorn, чтобы логи гарантированно доходили до консоли
-logger = logging.getLogger("uvicorn.error")
+# Импортируем ваши модули валидации и ИИ
+# Подразумевается, что они у вас написаны асинхронно или обернуты в asyncio.to_thread
+# from validators import run_validation_level_2, run_validation_level_3
 
-app = FastAPI(title="StroyNet Dispatcher", version="1.0")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "GlDxzFUy6V")
+DB_HOST = os.getenv("DB_HOST", "82.146.18.156")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_NAME = os.getenv("DB_NAME", "stroy_net")
 
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-class UniversalInputMessage(BaseModel):
-    platform: str
-    chat_id: str
-    chat_type: str
-    user_id: str
-    sender_name: str
-    text: str
-    message_uid: Optional[str] = None
+db_pool = None
+listener_task = None  # Ссылка на фоновую задачу лисенера
 
 
-# Глобальный словарь лимитов
-last_reply_time = {}
-
-
-# ==============================================================================
-# ПОДПРОГРАММЫ ДЛЯ ОТПРАВКИ И ОБРАБОТКИ (Объявлены в самом начале)
-# ==============================================================================
-
-async def send_to_max(chat_id: str, text: str):
-    url = f"{MAX_BASE_URL}/messages"
-    headers = {"Authorization": MAX_TOKEN}
-    connector = aiohttp.TCPConnector(ssl=False)
-    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
-        await session.post(url, params={"chat_id": chat_id}, json={"text": text})
-
-
-async def process_ollama_reply_task(payload: str):
-    """Фоновый 3-уровневый конвейер обработки сообщений строителей."""
-    try:
-        data = json.loads(payload)
-
-        # 1. Извлекаем переменные и проверяем тип чата
-        chat_type = data.get('chat_type', 'private')
-        chat_id = data.get('chat_id')
-        messenger_uid = data.get('messenger_uid')
-        text = data.get('text', '')
-
-        if chat_type != 'private':
-            logger.info(f"🤫 Пропускаем: групповой чат ({chat_type}).")
-            return
-
-        if data.get('direction') != 'inbound':
-            return
-
-        # === НАЧАЛО ЗАМЕНЫ ===
-
-        # Находим ID записи в логах для смены уровней валидации
-        log_id = data.get('log_id') or await db.get_last_log_id_for_user(messenger_uid)
-
-        # Предохранитель: если лог вообще не найден в базе, останавливаемся, чтобы не упасть
-        if not log_id:
-            logger.warning(f"⚠️ [КОНВЕЙЕР] Не удалось найти log_id в базе для пользователя {messenger_uid}")
-            return
-
-        logger.info(f"🏁 [КОНВЕЙЕР] Старт лога #{log_id}. Уровень 1 пройден.")
-
-        # ==============================================================================
-        # 🛡️ УРОВЕНЬ 2: ПРОВЕРКА ДОПУСКА СОТРУДНИКА (Демо-режим)
-        # ==============================================================================
-        # Метод check_user_exists_by_uid в database.py теперь всегда возвращает True для демо
-        is_employee = await db.check_user_exists_by_uid(messenger_uid)
-        logger.info(f"✅ [КОНВЕЙЕР #2] Уровень 2 пройден (Авторизация: {is_employee}).")
-
-        # ==============================================================================
-        # 📊 УРОВЕНЬ 3: ПОВЕРХНОСТНАЯ ВАЛИДАЦИЯ И ОТВЕТ
-        # ==============================================================================
-        analysis = fast_surface_validate(text)
-
-        # Записываем стадию 3 в PostgreSQL
-        await db.update_validation_status(
-            log_id=log_id,
-            level=3,
-            is_valid=analysis["is_valid"],
-            score=analysis["confidence_score"],
-            intent=analysis["intent_type"]
-        )
-
-        # Сценарий А: Полный мусор или непонятный текст
-        if not analysis["is_valid"]:
-            await send_to_max(chat_id,
-                              "ℹ️ Не совсем понял строительный запрос. Напишите подробнее: какой материал, объем или технику нужно заказать?")
-            return
-
-        # Сценарий Б: Чистая болтовня или приветствие
-        if analysis["intent_type"] == "chitchat":
-            # Проверяем 2-минутный спам-лимит только для болтовни!
-            if messenger_uid:
-                now = datetime.now()
-                if messenger_uid in last_reply_time:
-                    elapsed = (now - last_reply_time[messenger_uid]).total_seconds()
-                    if elapsed < 120:
-                        logger.info(f"⏳ Пропускаем флуд {messenger_uid}: прошло {elapsed:.0f} сек.")
-                        return
-
-            # Вызываем Ollama в режиме простого текстового чата
-            reply_text = await parse_with_ollama(text, mode="chat")
-            await send_to_max(chat_id, reply_text)
-
-            if messenger_uid:
-                last_reply_time[messenger_uid] = datetime.now()
-            return
-
-        # Сценарий В: РЕАЛЬНАЯ СТРОИТЕЛЬНАЯ ЗАЯВКА (Идет без таймера, обрабатываем ВСЕГДА!)
-        if analysis["intent_type"] == "construction_task":
-            logger.info(f"🏗️ [КОНВЕЙЕР #3] Обнаружена строительная задача! Вызываем Ollama.")
-
-            # На первом этапе демо возвращаем красивый текстовый ответ ИИ
-            reply_text = await parse_with_ollama(text, mode="chat")
-
-            # Отправляем прорабу подтверждение
-            await send_to_max(chat_id, f"👷‍♂️ Терминатор-Диспетчер принял заявку:\n\n{reply_text}")
-            return
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка в фоновом таске конвейера: {e}", exc_info=True)
-
-
-
-def handle_new_message(connection, pid, channel, payload):
-    """Синхронный колбэк для asyncpg.
-
-    Мгновенно перенаправляет сообщение в Event Loop и освобождает шину БД.
+async def handle_new_message(connection, pid, channel, payload):
     """
-    asyncio.create_task(process_ollama_reply_task(payload))
+    🔥 Колбэк-функция, которая срабатывает МГНОВЕННО, когда в базу падает NOTIFY.
+    payload — это переданный из триггера log_id.
+    """
+    log_id = payload
+    print(f"🔔 [Поток ИИ] Перехвачен сигнал NOTIFY! Новое сообщение ID: {log_id}")
+
+    # Запускаем асинхронную цепочку обработки (Уровни 2, 3 и т.д.)
+    # Чтобы не блокировать лисенер, пускаем обработку фоном внутри asyncio
+    asyncio.create_task(process_pipeline(int(log_id)))
 
 
-# ==============================================================================
-# СЛУШАТЕЛЬ УВЕДОМЛЕНИЙ ИЗ БД
-# ==============================================================================
+async def process_pipeline(log_id: int):
+    """Главный конвейер ИИ: запускает валидацию, авторизацию и вызов Ollama."""
+    try:
+        print(f"⚙️ [Конвейер] Начинаем обработку сообщения #{log_id}...")
 
-async def listen_for_messages():
-    """Слушает уведомления из БД и автоматически восстанавливает связь при сбоях."""
-    logger.info("🔥 Слушатель запущен (фоновый процесс активирован)")
+        # Тут будет ваш код Уровня 2 (Проверка прав в employee_phones)
+        # ...
 
+        # Тут будет ваш код Уровня 3 (Разделение на задачи и болтовню через Regex + Ollama)
+        # ...
+
+        print(f"✅ [Конвейер] Сообщение #{log_id} успешно прошло обработку!")
+    except Exception as e:
+        print(f"❌ [Конвейер] Ошибка обработки сообщения #{log_id}: {e}")
+
+
+async def pg_listener():
+    """
+    Бесконечный цикл лисенера. Выделяет отдельное постоянное соединение с БД,
+    подписывается на канал и восстанавливает связь при сбоях.
+    """
     while True:
-        conn = None
         try:
-            # Создаем новое подключение
-            conn = await asyncpg.connect(
-                user=DB_USER,
-                password=DB_PASSWORD,
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME
-            )
+            print("🎙️ Попытка подключения выделенного соединения для LISTEN...")
+            conn = await asyncpg.connect(DATABASE_URL)
 
-            # Регистрируем функцию обратного вызова (она теперь объявлена выше!)
-            await conn.add_listener('new_message', handle_new_message)
-            logger.info("🔔 FastAPI успешно подключился и слушает уведомления из БД")
+            # Регистрируем слушатель на ваш канал триггера
+            await conn.add_listener('new_message_trigger', handle_new_message)
+            print("🚀 Лисенер успешно подписался на канал 'new_message_trigger' и ждет данных...")
 
-            # Удерживаем соединение открытым (Heartbeat проверка)
+            # Держим соединение активным, пока работает приложение
             while True:
-                await conn.execute("SELECT 1")
-                await asyncio.sleep(30)
+                await asyncio.sleep(5)
+                # Проверяем, жива ли сеть легким пингом
+                await conn.execute("SELECT 1;")
 
         except asyncio.CancelledError:
-            logger.warning("🔇 Слушатель БД остановлен пользователем/системой")
-            if conn:
+            print("🛑 Фоновая задача лисенера принудительно остановлена.")
+            if 'conn' in locals():
                 await conn.close()
-            break  # Выходим из внешнего цикла при намеренной остановке
-
+            break
         except Exception as e:
-            logger.error(f"❌ Ошибка соединения или слушателя БД: {e}", exc_info=True)
-            logger.info("🔄 Попытка переподключения через 5 секунд...")
-            if conn:
-                try:
-                    await conn.close()
-                except Exception:
-                    pass
+            print(f"💥 Ошибка лисенера БД: {e}. Повторное подключение через 5 секунд...")
             await asyncio.sleep(5)
 
 
-# ==============================================================================
-# LIFECYCLE (Жизненный цикл FastAPI с отловом ошибок старта)
-# ==============================================================================
-
-def handle_task_result(task: asyncio.Task):
-    """Служебный колбэк: перехватывает фатальные ошибки падения таски при запуске."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Управляет пулом и фоновыми задачами при старте и выключении веб-сервера."""
+    global db_pool, listener_task
     try:
-        task.result()
-    except Exception as e:
-        logger.critical(f"💥 ФАТАЛЬНЫЙ СБОЙ: Слушатель БД упал сразу после старта: {e}", exc_info=True)
+        # 1. Запуск основного пула для HTTP-эндпоинтов
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
+        print("⚡ Асинхронный пул соединений с PostgreSQL запущен.")
+
+        # 2. Запуск фоновой задачи LISTEN в событийно-ориентированном цикле (Event Loop)
+        listener_task = asyncio.create_task(pg_listener())
+
+        yield
+    finally:
+        # Корректно завершаем задачи при остановке сервера
+        if listener_task:
+            listener_task.cancel()
+            await asyncio.gather(listener_task, return_exceptions=True)
+        if db_pool:
+            await db_pool.close()
+        print("🛑 Все службы и пулы StroyNet остановлены.")
 
 
-@app.on_event("startup")
-async def startup():
-    global listener_task
-    await db.connect()
-
-    # Запускаем задачу слушателя
-    listener_task = asyncio.create_task(listen_for_messages())
-
-    # Вешаем предохранитель. Если таска упадет из-за синтаксиса, мы увидим трейсбэк
-    listener_task.add_done_callback(handle_task_result)
-
-    logger.info("🚀 FastAPI запущен, слушатель уведомлений активен")
+app = FastAPI(title="StroyNet API Gateway", lifespan=lifespan)
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    global listener_task
-    if listener_task:
-        logger.info("⏳ Завершение работы: остановка слушателя БД...")
-        listener_task.cancel()
-        try:
-            await listener_task
-        except asyncio.CancelledError:
-            pass
-    await db.disconnect()
-    logger.info("🛑 FastAPI остановлен")
-
-
-# ==============================================================================
-# ЭНДПОИНТЫ API
-# ==============================================================================
-
-@app.post("/api/v1/message", status_code=status.HTTP_200_OK)
-async def handle_message(msg: UniversalInputMessage):
+@app.post("/webhook/max")
+async def receive_max_webhook(request: Request):
+    """Принимает вебхук от МАКС с жесткой фильтрацией групповых чатов."""
     try:
-        # 1. ЛОГИРОВАНИЕ (Создаем запись в базе — это уровень 1)
-        await db.log_incoming_message(
-            platform=msg.platform,
-            chat_id=msg.chat_id,
-            chat_type=msg.chat_type,
-            messenger_uid=msg.user_id,
-            text=msg.text,
-            message_uid=msg.message_uid,
-            intent_type='unknown',
-            confidence_score=0,
-            priority=1,
-            validation_level=1,  # Начинаем строго с 1 уровня
-            validation_score=50,
-            source_type='text',
-            access_level=1
-        )
-        logger.info(f"📋 [LOG] Сообщение от {msg.sender_name} сохранено в message_logs.")
+        payload = await request.json()
 
-        # 2. ПРОВЕРКА / РЕГИСТРАЦИЯ ПОЛЬЗОВАТЕЛЯ
-        is_registered = await db.check_user_exists(msg.platform, msg.user_id)
-        if not is_registered:
-            await db.register_user(
-                platform=msg.platform,
-                user_id=msg.user_id,
-                first_name=msg.sender_name
-            )
-            reply = f"Приветствую, {msg.sender_name}! Вы зафиксированы в системе."
-            await send_to_max(msg.chat_id, reply)
-            return {"status": "new_user_registered", "user_id": msg.user_id}
+        # 1. Извлекаем объект сообщения и чата
+        message_obj = payload.get("message", {})
+        chat_obj = message_obj.get("chat", {})
 
-        # 3. ПАРСИНГ ЧЕРЕЗ OLLAMA (Указываем точный режим parser!)
-        parsed = await parse_with_ollama(msg.text, mode="parser")
-        logger.info(f"🤖 [OLLAMA] Распарсено на эндпоинте: {parsed}")
+        # 2. ПРОВЕРКА ТИПА ЧАТА: игнорируем всё, кроме личной переписки (private)
+        # Если МАКС присылает плоскую структуру, проверяем ключ chat_type из корня
+        chat_type = chat_obj.get("type") or payload.get("chat_type", "private")
 
-        if isinstance(parsed, dict) and "error" in parsed:
-            await db.save_unprocessed_order(
-                messenger_uid=msg.user_id,
-                raw_text=msg.text,
-                error=parsed.get("error", "Неизвестная ошибка")
-            )
-            reply = f"Не удалось распарсить заявку. Проверьте формат сообщения."
-            await send_to_max(msg.chat_id, reply)
-            return {"status": "parsing_error", "parsed": parsed}
+        if chat_type in ["group", "supergroup", "channel"]:
+            print(f"🚫 [Фильтр чатов] Игнорируем сообщение из группы/канала (Тип: {chat_type}).")
+            # Возвращаем 200 OK, чтобы МАКС зафиксировал успешную доставку и не слал повторов
+            return {"status": "ignored", "reason": "group_chats_not_allowed"}
 
-        # 4. СОХРАНЕНИЕ В ORDERS
-        await db.save_parsed_order(
-            messenger_uid=msg.user_id,
-            raw_text=msg.text,
-            parsed_data=parsed
-        )
-        logger.info(f"📦 [ЗАЯВКА] Сохранена в orders для {msg.sender_name}")
+        # 3. Извлекаем стандартные поля
+        if "from" in message_obj:
+            messenger_uid = str(message_obj["from"].get("id", ""))
+        else:
+            messenger_uid = str(payload.get("user_id") or payload.get("messenger_uid", ""))
 
-        # 5. ОТВЕТ В CHAT
-        reply = f"Заявка принята! Распознано: {parsed}"
-        await send_to_max(msg.chat_id, reply)
-        return {"status": "success", "parsed": parsed}
+        message_text = ""
+        if "text" in message_obj:
+            message_text = str(message_obj.get("text", "")).strip()
+        else:
+            message_text = str(payload.get("text") or payload.get("message", "")).strip()
+
+        if not messenger_uid or not message_text:
+            return Response(content="Bad Request: Missing UID or Text", status_code=status.HTTP_400_BAD_REQUEST)
+
+        # 4. Уровень 1: Запись в БД, только если это личный чат
+        query = """
+            INSERT INTO message_logs (messenger_uid, text, validation_level, is_valid, intent_type)
+            VALUES ($1, $2, 1, FALSE, 'unprocessed')
+            RETURNING log_id;
+        """
+        async with db_pool.acquire() as connection:
+            async with connection.transaction():
+                log_id = await connection.fetchval(query, messenger_uid, message_text)
+                await connection.execute(f"NOTIFY new_message_trigger, '{log_id}';")
+
+        print(f"📥 [Уровень 1] Личное сообщение #{log_id} сохранено. Триггер отправлен.")
+        return {"status": "success", "log_id": log_id}
 
     except Exception as e:
-        logger.error(f"💥 [ОШИБКА ЭНДПОИНТА] {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ Ошибка эндпоинта вебхука: {e}")
+        return Response(content="Internal Error", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-@app.get("/ping")
-async def ping():
-    return {"status": "alive", "service": "stroy-net-dispatcher"}
