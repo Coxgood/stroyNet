@@ -12,6 +12,7 @@ from typing import Optional
 from config import MAX_TOKEN, MAX_BASE_URL, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
 from database import db
 from ollama_client import parse_with_ollama
+from validators import fast_surface_validate
 
 # Используем системный логгер Uvicorn, чтобы логи гарантированно доходили до консоли
 logger = logging.getLogger("uvicorn.error")
@@ -46,44 +47,86 @@ async def send_to_max(chat_id: str, text: str):
 
 
 async def process_ollama_reply_task(payload: str):
-    """Изолированная фоновая задача: обрабатывает текст через Ollama и отвечает.
-
-    Она работает параллельно и НЕ блокирует слушатель базы данных.
-    """
+    """Фоновый 3-уровневый конвейер обработки сообщений строителей."""
     try:
         data = json.loads(payload)
+
+        # 1. Извлекаем переменные и проверяем тип чата
+        chat_type = data.get('chat_type', 'private')
+        chat_id = data.get('chat_id')
+        messenger_uid = data.get('messenger_uid')
+        text = data.get('text', '')
+
+        if chat_type != 'private':
+            logger.info(f"🤫 Пропускаем: групповой чат ({chat_type}).")
+            return
+
         if data.get('direction') != 'inbound':
             return
 
-        chat_id = data.get('chat_id')
-        messenger_uid = data.get('messenger_uid')
-        text = data.get('text')
-        chat_type = data.get('chat_type', 'private')
+        # Находим ID записи в логах для смены уровней валидации
+        log_id = data.get('log_id') or await db.get_last_log_id_for_user(messenger_uid)
+        logger.info(f"🏁 [КОНВЕЙЕР] Старт лога #{log_id}. Уровень 1 пройден.")
 
-        # 🛑 ГЛАВНЫЙ ФИЛЬТР: Если это группа или супергруппа — полностью игнорируем
-        if chat_type != 'private':
-            logger.info(f"🤫 Пропускаем сообщение: это общий чат ({chat_type}), в группы не отвечаем.")
+        # ==============================================================================
+        # 🛡️ УРОВЕНЬ 2: ПРОВЕРКА ДОПУСКА СОТРУДНИКА (Демо-режим)
+        # ==============================================================================
+        # Когда узнаем точную колонку в employee_phones, включим жесткий блок.
+        # Пока просто логируем переход.
+        logger.info(f"✅ [КОНВЕЙЕР #2] Уровень 2 пройден (Авторизация).")
+
+        # ==============================================================================
+        # 📊 УРОВЕНЬ 3: ПОВЕРХНОСТНАЯ ВАЛИДАЦИЯ И ОТВЕТ
+        # ==============================================================================
+        analysis = fast_surface_validate(text)
+
+        # Записываем стадию 3 в PostgreSQL
+        await db.update_validation_status(
+            log_id=log_id,
+            level=3,
+            is_valid=analysis["is_valid"],
+            score=analysis["confidence_score"],
+            intent=analysis["intent_type"]
+        )
+
+        # Сценарий А: Полный мусор или непонятный текст
+        if not analysis["is_valid"]:
+            await send_to_max(chat_id,
+                              "ℹ️ Не совсем понял строительный запрос. Напишите подробнее: какой материал, объем или технику нужно заказать?")
             return
 
-        # Если сообщение из лички — проверяем лимит 2 минуты
-        if messenger_uid:
-            now = datetime.now()
-            if messenger_uid in last_reply_time:
-                elapsed = (now - last_reply_time[messenger_uid]).total_seconds()
-                if elapsed < 120:  # 2 минуты
-                    logger.info(f"⏳ Пропускаем ответ {messenger_uid}: прошло {elapsed:.0f} секунд")
-                    return
+        # Сценарий Б: Чистая болтовня или приветствие
+        if analysis["intent_type"] == "chitchat":
+            # Проверяем 2-минутный спам-лимит только для болтовни!
+            if messenger_uid:
+                now = datetime.now()
+                if messenger_uid in last_reply_time:
+                    elapsed = (now - last_reply_time[messenger_uid]).total_seconds()
+                    if elapsed < 120:
+                        logger.info(f"⏳ Пропускаем флуд {messenger_uid}: прошло {elapsed:.0f} сек.")
+                        return
 
-            # Вызываем Ollama для ответа в личку
-            reply_text = await parse_with_ollama(text)
-
-            # Отправляем ответ в МАКС
+            # Вызываем Ollama в режиме простого текстового чата
+            reply_text = await parse_with_ollama(text, mode="chat")
             await send_to_max(chat_id, reply_text)
-            last_reply_time[messenger_uid] = now
-            logger.info(f"📤 Ответ отправлен {messenger_uid}: {reply_text[:50]}...")
+
+            if messenger_uid:
+                last_reply_time[messenger_uid] = datetime.now()
+            return
+
+        # Сценарий В: РЕАЛЬНАЯ СТРОИТЕЛЬНАЯ ЗАЯВКА (Идет без таймера, обрабатываем ВСЕГДА!)
+        if analysis["intent_type"] == "construction_task":
+            logger.info(f"🏗️ [КОНВЕЙЕР #3] Обнаружена строительная задача! Вызываем Ollama.")
+
+            # На первом этапе демо возвращаем красивый текстовый ответ ИИ
+            reply_text = await parse_with_ollama(text, mode="chat")
+
+            # Отправляем прорабу подтверждение
+            await send_to_max(chat_id, f"👷‍♂️ Терминатор-Диспетчер принял заявку:\n\n{reply_text}")
+            return
 
     except Exception as e:
-        logger.error(f"❌ Ошибка обработки сообщения в фоновом таске: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка в фоновом таске конвейера: {e}", exc_info=True)
 
 
 
