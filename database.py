@@ -140,5 +140,26 @@ class DBManager:
                 """,
                 messenger_uid, raw_text, error
             )
+    async def update_validation_status(self, log_id: int, level: int, is_valid: bool, score: int, intent: str):
+        """📊 УРОВЕНЬ 3: Обновляет стадию валидации и результаты лингвистического анализа."""
+        if not log_id:
+            return
+
+        query = """
+            UPDATE message_logs
+            SET validation_level = $1,
+                is_valid = $2,
+                validation_score = $3,
+                intent_type = $4
+            WHERE log_id = $5;
+        """
+        try:
+            # Вызываем execute через ваш пул подключений
+            await self.pool.execute(query, level, is_valid, score, intent, log_id)
+            print(f"🎯 [БД] Статус лога #{log_id} успешно обновлен на уровень {level}")
+        except Exception as e:
+            print(f"❌ Ошибка метода update_validation_status для лога #{log_id}: {e}")
+
+
 
 db = DBManager()
