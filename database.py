@@ -42,13 +42,15 @@ class DBManager:
                 validation_level, validation_score, source_type, access_level
             )
 
-    async def check_user_exists(self, platform: str, messenger_uid: str) -> bool:
-        """Проверяет, зарегистрирован ли уже этот user_id в employee_accounts"""
-        if not self.pool: return False
-        query = "SELECT 1 FROM employee_accounts WHERE platform = $1 AND messenger_uid = $2;"
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, platform, str(messenger_uid))
-            return row is not None
+    async def check_user_exists_by_uid(self, messenger_uid: str) -> bool:
+        """🛡️ УРОВЕНЬ 2: Проверка допуска прораба (Демо-заглушка).
+
+        В таблице employee_phones пока нет колонки messenger_uid,
+        поэтому для тестов временно одобряем всех авторизованных в МАКС прорабов.
+        """
+        # Как только добавите в employee_phones привязку к UID МАКС/Телеграм,
+        # здесь будет полноценный SQL-запрос.
+        return True
 
     # =====================================================================
     # РЕГИСТРАЦИЯ НОВОГО ПОЛЬЗОВАТЕЛЯ
