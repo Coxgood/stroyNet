@@ -60,8 +60,13 @@ async def process_ollama_reply_task(payload: str):
         text = data.get('text')
         chat_type = data.get('chat_type', 'private')
 
-        # Если сообщение из лички — проверяем лимит 5 минут
-        if chat_type == 'private' and messenger_uid:
+        # 🛑 ГЛАВНЫЙ ФИЛЬТР: Если это группа или супергруппа — полностью игнорируем
+        if chat_type != 'private':
+            logger.info(f"🤫 Пропускаем сообщение: это общий чат ({chat_type}), в группы не отвечаем.")
+            return
+
+        # Если сообщение из лички — проверяем лимит 2 минуты
+        if messenger_uid:
             now = datetime.now()
             if messenger_uid in last_reply_time:
                 elapsed = (now - last_reply_time[messenger_uid]).total_seconds()
@@ -69,7 +74,7 @@ async def process_ollama_reply_task(payload: str):
                     logger.info(f"⏳ Пропускаем ответ {messenger_uid}: прошло {elapsed:.0f} секунд")
                     return
 
-            # Вызываем Ollama для ответа в личку (теперь это безопасно!)
+            # Вызываем Ollama для ответа в личку
             reply_text = await parse_with_ollama(text)
 
             # Отправляем ответ в МАКС
@@ -79,6 +84,7 @@ async def process_ollama_reply_task(payload: str):
 
     except Exception as e:
         logger.error(f"❌ Ошибка обработки сообщения в фоновом таске: {e}", exc_info=True)
+
 
 
 def handle_new_message(connection, pid, channel, payload):
