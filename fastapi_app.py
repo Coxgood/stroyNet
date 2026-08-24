@@ -239,7 +239,7 @@ async def shutdown():
 @app.post("/api/v1/message", status_code=status.HTTP_200_OK)
 async def handle_message(msg: UniversalInputMessage):
     try:
-        # 1. ЛОГИРОВАНИЕ
+        # 1. ЛОГИРОВАНИЕ (Создаем запись в базе — это уровень 1)
         await db.log_incoming_message(
             platform=msg.platform,
             chat_id=msg.chat_id,
@@ -247,11 +247,11 @@ async def handle_message(msg: UniversalInputMessage):
             messenger_uid=msg.user_id,
             text=msg.text,
             message_uid=msg.message_uid,
-            intent_type='transaction' if len(msg.text) > 5 else 'unknown',
-            confidence_score=80 if len(msg.text) > 5 else 30,
-            priority=5,
-            validation_level=1,
-            validation_score=80 if len(msg.text) > 5 else 30,
+            intent_type='unknown',
+            confidence_score=0,
+            priority=1,
+            validation_level=1,  # Начинаем строго с 1 уровня
+            validation_score=50,
             source_type='text',
             access_level=1
         )
@@ -265,18 +265,15 @@ async def handle_message(msg: UniversalInputMessage):
                 user_id=msg.user_id,
                 first_name=msg.sender_name
             )
-            reply = (
-                f"Приветствую, {msg.sender_name}! "
-                f"Вы зафиксированы в системе. Для активации роли обратитесь к админу."
-            )
+            reply = f"Приветствую, {msg.sender_name}! Вы зафиксированы в системе."
             await send_to_max(msg.chat_id, reply)
             return {"status": "new_user_registered", "user_id": msg.user_id}
 
-        # 3. ПАРСИНГ ЧЕРЕЗ OLLAMA (для заявок на эндпоинте)
-        parsed = await parse_with_ollama(msg.text)
+        # 3. ПАРСИНГ ЧЕРЕЗ OLLAMA (Указываем точный режим parser!)
+        parsed = await parse_with_ollama(msg.text, mode="parser")
         logger.info(f"🤖 [OLLAMA] Распарсено на эндпоинте: {parsed}")
 
-        if "error" in parsed:
+        if isinstance(parsed, dict) and "error" in parsed:
             await db.save_unprocessed_order(
                 messenger_uid=msg.user_id,
                 raw_text=msg.text,
