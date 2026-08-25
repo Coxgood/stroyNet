@@ -66,7 +66,7 @@ async def handle_new_message(connection, pid, channel, payload):
 
 
 async def listen_for_messages():
-    """Подключается к БД и слушает уведомления."""
+    print("🔥 listen_for_messages() вызвана")  # <-- добавить
     conn = None
     try:
         conn = await asyncpg.connect(
