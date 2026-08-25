@@ -1,9 +1,12 @@
 # listener_v001.py (Эталонный рабочий фрагмент)
-import os
 import asyncio
 import httpx
 import asyncpg
 import json
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 # Конфигурация собирается СТРОГО локально
 DB_USER = os.getenv("DB_USER", "postgres")

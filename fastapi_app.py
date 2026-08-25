@@ -5,6 +5,9 @@ import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 import asyncpg
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Импортируем ваши модули валидации и ИИ
 # Подразумевается, что они у вас написаны асинхронно или обернуты в asyncio.to_thread
