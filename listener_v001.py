@@ -3,6 +3,7 @@ import os
 import asyncio
 import httpx
 import asyncpg
+import json
 
 # Конфигурация из .env
 DB_USER = os.getenv("DB_USER", "postgres")
@@ -19,52 +20,84 @@ MAX_TOKEN = os.getenv("MAX_TOKEN",
 
 HEADERS = {"Authorization": MAX_TOKEN}  # Важно: без Bearer!
 
+# listener_v001.py (Обновленный фрагмент кода)
+import json  # Не забудьте импортировать в самом верху файла!
+
 
 async def process_message(update, pool):
-    """Конвейер ИИ: Уровень 1, 2, 3..."""
-    # МАКС присылает сообщение в поле message или sender
-    message_obj = update.get("message", {})
-    chat_obj = message_obj.get("chat", {})
+    """Конвейер ИИ: Безопасный парсинг сырого обновления от МАКС."""
+    try:
+        # Если МАКС прислал строку, принудительно превращаем её в JSON-словарь
+        if isinstance(update, str):
+            try:
+                update = json.loads(update)
+            except Exception as e:
+                print(f"⚠️ Не удалось распарсить строку апдейта в JSON: {e}. Данные: {update}")
+                return
 
-    # Жесткий фильтр групп
-    if chat_obj.get("type") in ["group", "supergroup"]:
-        return
-
-    text = message_obj.get("text", "").strip()
-    # В МАКС ID пользователя лежит в message['from']['id']
-    sender_obj = message_obj.get("from", {})
-    messenger_uid = str(sender_obj.get("id", ""))
-
-    if not text or not messenger_uid:
-        return
-
-    async with pool.acquire() as conn:
-        # Уровень 1: Логирование в БД
-        query = """
-            INSERT INTO message_logs (messenger_uid, text, validation_level, is_valid, intent_type)
-            VALUES ($1, $2, 1, FALSE, 'unprocessed')
-            RETURNING log_id;
-        """
-        log_id = await conn.fetchval(query, messenger_uid, text)
-        print(f"📥 [Уровень 1] Сообщение #{log_id} сохранено в БД.")
-
-        # Уровень 2: Проверка допуска прораба
-        has_access = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM employee_phones WHERE messenger_uid = $1);",
-            messenger_uid
-        )
-
-        if not has_access:
-            print(f"❌ [Уровень 2] Доступ запрещен для UID: {messenger_uid}")
-            await conn.execute(
-                "UPDATE message_logs SET validation_level=2, is_valid=FALSE, intent_type='unauthorized' WHERE log_id=$1;",
-                log_id)
+        # Теперь мы железно уверены, что update — это словарь
+        if not isinstance(update, dict):
+            print(f"⚠️ Нетипичный формат апдейта МАКС (не dict): {type(update)}")
             return
 
-        print(f"✅ [Уровень 2] Доступ разрешен для UID: {messenger_uid}")
-        await conn.execute("UPDATE message_logs SET validation_level=2, is_valid=TRUE WHERE log_id=$1;", log_id)
+        message_obj = update.get("message", {})
+        if not message_obj:
+            # На случай, если МАКС прислал плоскую структуру
+            message_obj = update
 
-        # Сюда завтра мы добавим Уровень 3 и Уровень 4 (Ollama JSON Экстрактор)
+        chat_obj = message_obj.get("chat", {})
+
+        # Жесткий фильтр групп
+        if isinstance(chat_obj, dict) and chat_obj.get("type") in ["group", "supergroup"]:
+            return
+
+        text = message_obj.get("text", "").strip()
+
+        # Извлекаем UID (проверяем структуру вложенности МАКС)
+        sender_obj = message_obj.get("from", {})
+        if isinstance(sender_obj, dict):
+            messenger_uid = str(sender_obj.get("id", ""))
+        else:
+            messenger_uid = str(message_obj.get("user_id") or update.get("messenger_uid", ""))
+
+        if not text or not messenger_uid:
+            return
+
+        # --- Далее идет ваша рабочая SQL логика пула (Уровни 1 и 2) ---
+        async with pool.acquire() as conn:
+            # Уровень 1: Логирование в БД
+            query = """
+                INSERT INTO message_logs (messenger_uid, text, validation_level, is_valid, intent_type)
+                VALUES ($1, $2, 1, FALSE, 'unprocessed')
+                RETURNING log_id;
+            """
+            log_id = await conn.fetchval(query, messenger_uid, text)
+            print(f"📥 [Уровень 1] Сообщение #{log_id} сохранено в БД.")
+
+            # Уровень 2: Проверка допуска прораба
+            has_access = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM employee_phones WHERE messenger_uid = $1);",
+                messenger_uid
+            )
+
+            if not has_access:
+                print(f"❌ [Уровень 2] Доступ запрещен для UID: {messenger_uid}. Запишите его в базу для тестов!")
+                await conn.execute("""
+                    UPDATE message_logs 
+                    SET validation_level = 2, is_valid = FALSE, intent_type = 'unauthorized' 
+                    WHERE log_id = $1;
+                """, log_id)
+                return
+
+            print(f"✅ [Уровень 2] Доступ разрешен для UID: {messenger_uid}")
+            await conn.execute("""
+                UPDATE message_logs 
+                SET validation_level = 2, is_valid = TRUE 
+                WHERE log_id = $1;
+            """, log_id)
+
+    except Exception as e:
+        print(f"💥 Критическая ошибка парсинга внутри process_message: {e}")
 
 
 async def main():
