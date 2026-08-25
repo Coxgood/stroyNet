@@ -31,7 +31,15 @@ listener_task = None
 async def handle_new_message(connection, pid, channel, payload):
     """Обрабатывает уведомление о новом сообщении в БД."""
     try:
-        log_id = int(payload)
+        # Парсим JSON-строку, которую передаёт триггер
+        import json
+        data = json.loads(payload)
+        log_id = data.get('log_id')
+
+        if not log_id:
+            print(f"⚠️ [FastAPI] В payload нет log_id: {payload}")
+            return
+
         print(f"🔔 [FastAPI] Новое сообщение в БД: ID {log_id}")
 
         async with db_pool.acquire() as conn:
@@ -51,15 +59,10 @@ async def handle_new_message(connection, pid, channel, payload):
             print(f"📩 [FastAPI] Обработка сообщения от {messenger_uid}: {text[:50]}...")
 
             # --- ТУТ БУДЕТ ЛОГИКА ОБРАБОТКИ ---
-            # Если source_type == 'voice' → вызываем Whisper
-            # Если source_type == 'photo' → вызываем YOLO + OCR
-            # Если source_type == 'text' → отправляем в Ollama
-
-            # Пока просто логируем
             print(f"✅ [FastAPI] Сообщение {log_id} обработано")
 
     except Exception as e:
-        print(f"❌ [FastAPI] Ошибка обработки сообщения {log_id}: {e}")
+        print(f"❌ [FastAPI] Ошибка обработки сообщения: {e}")
 
 
 async def listen_for_messages():
