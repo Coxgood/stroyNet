@@ -11,7 +11,7 @@ import asyncpg
 # from validators import run_validation_level_2, run_validation_level_3
 
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "GlDxzFUy6V")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")  # СТРОГО ПУСТАЯ СТРОКА
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "stroy_net")

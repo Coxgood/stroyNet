@@ -7,15 +7,15 @@ import json
 
 # Конфигурация собирается СТРОГО локально
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "GlDxzFUy6V")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")  # СТРОГО ПУСТАЯ СТРОКА
 DB_NAME = os.getenv("DB_NAME", "stroy_net")
 DB_PORT = os.getenv("DB_PORT", "5432")
+
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@127.0.0.1:{DB_PORT}/{DB_NAME}"
 
 MAX_BASE_URL = os.getenv("MAX_BASE_URL", "https://platform-api2.max.ru")
-MAX_TOKEN = os.getenv("MAX_TOKEN",
-                      "f9LHodD0cOKvY0QG7ysxONTv-IGk5yxXNd_-7VCRjAqGI5SPN3KSnA9vMF5SKtVeN5ZuDafkyCqoSWUV4O6t")
-HEADERS = {"Authorization": MAX_TOKEN}  # Без слова Bearer!
+MAX_TOKEN = os.getenv("MAX_TOKEN", "")  # СТРОГО ПУСТАЯ СТРОКА
+HEADERS = {"Authorization": MAX_TOKEN}
 
 
 async def process_message(update_data, pool):
