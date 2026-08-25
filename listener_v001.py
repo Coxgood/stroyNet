@@ -68,35 +68,23 @@ async def process_message(update, pool):
 
 
 async def main():
-    print("🎙️ Запуск фонового лисенера StroyNet на Long Polling...")
+    print("🎙️ Запуск ЕДИНСТВЕННОГО фонового лисенера StroyNet на Long Polling...")
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
 
-    # МАКС требует отключить вебхуки перед использованием Long Polling
     async with httpx.AsyncClient(verify=False) as client:
-        try:
-            # Чистим старые подписки
-            await client.post(f"{MAX_BASE_URL}/subscriptions", headers=HEADERS, json={"webhook_url": ""})
-        except Exception as e:
-            print(f"⚠️ Предупреждение при очистке вебхука: {e}")
-
-        # Бесконечный цикл опроса МАКС
         while True:
             try:
+                # Прямо дергаем МАКС без всяких триггеров БД!
                 response = await client.get(f"{MAX_BASE_URL}/updates", headers=HEADERS, timeout=30.0)
                 if response.status_code == 200:
-                    updates = response.json()  # Ожидаем массив обновлений
-                    if isinstance(updates, list) and updates:
+                    updates = response.json()
+                    if updates:
                         for update in updates:
+                            # Прямо отправляем на конвейер
                             asyncio.create_task(process_message(update, pool))
-                elif response.status_code == 401:
-                    print("❌ Ошибка МАКС: Неверный токен (401)")
-                    await asyncio.sleep(10)
-                else:
-                    print(f"⚠️ Статус МАКС: {response.status_code}")
             except Exception as e:
-                print(f"💥 Ошибка сети/пула: {e}")
-
-            await asyncio.sleep(1)  # Пауза между пуллами
+                print(f"💥 Ошибка: {e}")
+            await asyncio.sleep(1)
 
 
 if __name__ == "__main__":

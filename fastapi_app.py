@@ -51,58 +51,15 @@ async def process_pipeline(log_id: int):
         print(f"❌ [Конвейер] Ошибка обработки сообщения #{log_id}: {e}")
 
 
-async def pg_listener():
-    """
-    Бесконечный цикл лисенера. Выделяет отдельное постоянное соединение с БД,
-    подписывается на канал и восстанавливает связь при сбоях.
-    """
-    while True:
-        try:
-            print("🎙️ Попытка подключения выделенного соединения для LISTEN...")
-            conn = await asyncpg.connect(DATABASE_URL)
-
-            # Регистрируем слушатель на ваш канал триггера
-            await conn.add_listener('new_message_trigger', handle_new_message)
-            print("🚀 Лисенер успешно подписался на канал 'new_message_trigger' и ждет данных...")
-
-            # Держим соединение активным, пока работает приложение
-            while True:
-                await asyncio.sleep(5)
-                # Проверяем, жива ли сеть легким пингом
-                await conn.execute("SELECT 1;")
-
-        except asyncio.CancelledError:
-            print("🛑 Фоновая задача лисенера принудительно остановлена.")
-            if 'conn' in locals():
-                await conn.close()
-            break
-        except Exception as e:
-            print(f"💥 Ошибка лисенера БД: {e}. Повторное подключение через 5 секунд...")
-            await asyncio.sleep(5)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Управляет пулом и фоновыми задачами при старте и выключении веб-сервера."""
-    global db_pool, listener_task
+    global db_pool
     try:
-        # 1. Запуск основного пула для HTTP-эндпоинтов
-        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
-        print("⚡ Асинхронный пул соединений с PostgreSQL запущен.")
-
-        # 2. Запуск фоновой задачи LISTEN в событийно-ориентированном цикле (Event Loop)
-        listener_task = asyncio.create_task(pg_listener())
-
+        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+        print("⚡ Пул FastAPI запущен. Только для обслуживания ручек.")
         yield
     finally:
-        # Корректно завершаем задачи при остановке сервера
-        if listener_task:
-            listener_task.cancel()
-            await asyncio.gather(listener_task, return_exceptions=True)
-        if db_pool:
-            await db_pool.close()
-        print("🛑 Все службы и пулы StroyNet остановлены.")
-
+        if db_pool: await db_pool.close()
 
 app = FastAPI(title="StroyNet API Gateway", lifespan=lifespan)
 
