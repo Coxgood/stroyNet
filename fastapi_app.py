@@ -139,6 +139,7 @@ async def process_new_message(payload_id: str):
 
     # Железный предохранитель: игнорируем JSON-дубликат сигнала
     if payload_str.startswith("{"):
+        print("🗑️ [ФИЛЬТР] Пропущен дублирующий JSON-сигнал для предотвращения удвоения строк.")
         return
 
     conn = None
