@@ -100,24 +100,30 @@ async def process_new_message(message_id: str):
 
 async def db_notification_listener():
     """Фоновый процесс, который держит постоянное соединение и слушает триггер"""
+    loop = asyncio.get_running_loop()
+
+    # Внутренний обработчик, который вызывается при получении сигнала из БД
+    def handle_notification(connection, pid, channel, payload):
+        # Потокобезопасно планируем выполнение асинхронной функции обработки
+        loop.call_soon_threadsafe(asyncio.create_task, process_new_message(payload))
+
     while True:
         try:
-            # Открываем отдельное выделенное подключение для прослушивания канала
+            # Открываем отдельное подключение для прослушивания канала
             conn = await asyncpg.connect(dsn=DATABASE_URL)
             print("📡 Фоновый слушатель БД успешно подписался на канал 'new_message_event'")
 
-            # Регистрируем наш обработчик (колбэк) на событие из базы
-            await conn.add_listener('new_message_event', lambda connection, pid, channel, payload:
-            asyncio.create_task(process_new_message(payload))
-                                    )
+            # Регистрируем надежный именованный обработчик событий
+            await conn.add_listener('new_message_event', handle_notification)
 
-            # Держим соединение активным (спим, пока не прилетит уведомление)
+            # Держим соединение активным
             while True:
                 await asyncio.sleep(3600)
 
         except (asyncpg.PostgresError, OSError) as e:
             print(f"⚠️ Ошибка слушателя БД ({e}). Переподключение через 5 секунд...")
             await asyncio.sleep(5)
+
 
 
 # Интегрируем в жизненный цикл FastAPI
