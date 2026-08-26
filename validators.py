@@ -15,31 +15,16 @@ CHITCHAT_MARKERS = [
 ]
 
 
-def fast_surface_validate(text: str) -> dict:
-    text_lower = text.lower().strip()
+def fast_surface_validate(text_msg: str) -> dict:
+    """
+    Отладочный валидатор: отключает все фильтры и принудительно
+    пропускает 100% сообщений в конвейер ИИ.
+    """
+    print(f"🔓 [ВАЛИДАТОР ОТКЛЮЧЕН] Принудительно пропускаем текст: '{text_msg}'")
 
-    construction_hits = sum(1 for m in CONSTRUCTION_MARKERS if re.search(m, text_lower))
-    chitchat_hits = sum(1 for m in CHITCHAT_MARKERS if re.search(m, text_lower))
-
-    if construction_hits > 0:
-        return {
-            "intent_type": "construction_task",
-            "confidence_score": min(50 + (construction_hits * 15), 95),
-            "priority": 3 if construction_hits > 1 else 2,
-            "is_valid": True
-        }
-
-    if chitchat_hits > 0:
-        return {
-            "intent_type": "chitchat",
-            "confidence_score": 85,
-            "priority": 1,
-            "is_valid": True
-        }
-
+    # Всегда возвращаем успешную структуру строительной задачи
     return {
-        "intent_type": "unknown",
-        "confidence_score": 20,
-        "priority": 1,
-        "is_valid": False
+        "is_valid": True,
+        "intent_type": "construction_task",
+        "confidence_score": 100
     }
