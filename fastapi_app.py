@@ -72,7 +72,7 @@ async def listen_for_messages():
         conn = await asyncpg.connect(
             user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT, database=DB_NAME
         )
-        await conn.add_listener('new_message', handle_new_message)
+        await conn.add_listener('new_message_event', handle_new_message)
         print("🔔 FastAPI слушает уведомления из БД")
         while True:
             await asyncio.sleep(1)
