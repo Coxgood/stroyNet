@@ -221,23 +221,23 @@ async def db_notification_listener():
 
 
 # Интегрируем в жизненный цикл FastAPI
+# =====================================================================
+# ЖИЗНЕННЫЙ ЦИКЛ FASTAPI (LIFESPAN)
+# =====================================================================
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Запускаем фонового слушателя параллельно с основным сервером FastAPI
-    # listener_task = asyncio.create_task(db_notification_listener())
+    # Слушатель теперь надёжно крутится в main_fastapi.py,
+    # поэтому здесь мы просто пишем чистый лог старта
+    print("🚀 FastAPI Lifespan: Сетевой шлюз StroyNet запущен!")
+
     yield
-    # При остановке FastAPI корректно завершаем фоновую задачу
-    listener_task.cancel()
-    try:
-        await listener_task
-    except asyncio.CancelledError:
-        print("🛑 Фоновый слушатель БД остановлен.")
+
+    # При выключении сервера просто пишем лог, без вызова отменённых задач
+    print("🛑 FastAPI Lifespan: Сетевой шлюз успешно остановлен.")
 
 
-# Регистрируем lifespan в вашем FastAPI приложении
-app = FastAPI(lifespan=lifespan)
-
-
+# Оставляем ОДНО красивое объявление приложения с заголовком
 app = FastAPI(title="StroyNet API Gateway", lifespan=lifespan)
 
 
