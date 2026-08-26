@@ -125,33 +125,24 @@ import json
 
 
 async def process_new_message(payload_id: str):
-    """Боевой конвейер ИИ: одинаково успешно понимает и чистые ID, и JSON-пакеты"""
     payload_str = payload_id.strip()
     log_id = None
-
-    # 🚨 УНИВЕРСАЛЬНЫЙ РАЗБОР СИГНАЛА:
     try:
         if payload_str.startswith("{"):
-            # Если база прислала сигнал в формате JSON, бережно распаковываем его
             data = json.loads(payload_str)
             log_id = int(data.get("log_id"))
-            print(f"🧩 [СИГНАЛ БД] Распакован JSON. Успешно извлечен log_id: {log_id}")
         else:
-            # Если база прислала сигнал в виде чистого числа-строки
             log_id = int(payload_str)
-            print(f"🎯 [СИГНАЛ БД] Получен чистый числовой log_id: {log_id}")
     except Exception as e:
-        # Если прилетел невалидный текст, который нельзя распарсить, выходим
-        print(f"🗑️ [ФИЛЬТР] Пропущен некорректный сигнал базы: {e}")
+        print(f"🗑️ [ФИЛЬТР] Ошибка парсинга: {e}")
         return
 
     if not log_id:
         return
 
-    # --- ДАЛЬШЕ ВАШ НАДЕЖНЫЙ КОД БЕЗ ИЗМЕНЕНИЙ ---
     conn = None
     try:
-        print(f"🚀 [КОНВЕЙЕР ИИ] Начинаем обработку log_id: {log_id}")
+        print(f"🔹 [ШАГ 1] Подключаюсь к БД для ID {log_id}")
         conn = await asyncpg.connect(dsn=DATABASE_URL)
 
         row = await conn.fetchrow("""
@@ -160,31 +151,27 @@ async def process_new_message(payload_id: str):
         """, log_id)
 
         if not row:
+            print(f"⚠️ [ШАГ 1] Строка {log_id} не найдена в базе!")
             return
 
-        uid = row['messenger_uid']
         text_msg = row['text']
-        intent = row['intent_type']
+        print(f"🔹 [ШАГ 2] Запускаю валидатор для текста: '{text_msg}'")
+        val_res = fast_surface_validate(text_msg)
 
-        if text_msg and (intent == 'unknown' or intent is None):
-            val_res = fast_surface_validate(text_msg)
-            ai_reply = await generate_smart_response(text_msg, val_res)
+        print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
+        ai_reply = await generate_smart_response(text_msg, val_res)
+        print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {ai_reply[:30]}...")
 
-            # Закрываем входящую задачу (Слой 2)
-            await conn.execute("""
-                UPDATE message_logs SET intent_type = $1, validation_level = 2, is_valid = TRUE WHERE log_id = $2;
-            """, val_res["intent_type"], log_id)
-
-            # Ставим ОДНУ чистую задачу на отправку
-            await conn.execute("""
-                INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status) 
-                VALUES ($1, $2, $3, $4, 'pending');
-            """, row['platform'] if row['platform'] else 'max_platform',
-                               row['chat_id'] if row['chat_id'] else 'test_chat_777', uid, ai_reply.strip())
-            print(f"🎉 [КОНВЕЙЕР ИИ] Ответ для log_id {log_id} успешно отправлен в outbound_messages!")
+        # Запись в очередь
+        await conn.execute("""
+            INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status) 
+            VALUES ($1, $2, $3, $4, 'pending');
+        """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
+                           ai_reply.strip())
+        print(f"🎉 [ШАГ 5] Успешно записано в outbound_messages!")
 
     except Exception as e:
-        print(f"❌ Ошибка конвейера ИИ для ID {log_id}: {e}")
+        print(f"❌ [КРИШЕК] Ошибка в процессе обработки ID {log_id}: {e}")
     finally:
         if conn:
             await conn.close()
