@@ -223,7 +223,7 @@ async def main():
         while True:
             # === НАШ НОВЫЙ ШАГ ===
             # Перед опросом новых обновлений проверяем, нет ли в базе ответов от ИИ для отправки
-            await send_ai_responses_to_max(session, pool)
+            # await send_ai_responses_to_max(session, pool)
             await send_ai_responses_from_queue(session, pool)
 
             # ======================
