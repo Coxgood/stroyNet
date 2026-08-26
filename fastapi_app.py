@@ -88,14 +88,51 @@ async def listen_for_messages():
 # =====================================================================
 
 # Функция, которая моментально сработает при появлении строки в message_logs
-async def process_new_message(message_id: str):
-    print(f"🔥 ИИ-Диспетчер: Найдена новая запись в message_logs с ID {message_id}!")
+async def process_new_message(payload_id: str):
+    """
+    Вызывается автоматически сервером FastAPI при срабатывании триггера.
+    payload_id — это прилетевший из БД log_id новой строки.
+    """
+    print(f"🔥 ИИ-Диспетчер: Найдена новая запись в message_logs с log_id {payload_id}!")
 
-    # Сюда вставляем логику обработки. Например, достаем эту запись из базы по ID:
-    # conn = await asyncpg.connect(dsn=DATABASE_URL)
-    # row = await conn.fetchrow("SELECT text FROM message_logs WHERE id = $1", int(message_id))
-    # print(f"Текст сообщения: {row['text']}")
-    # await conn.close()
+    conn = None
+    try:
+        log_id = int(payload_id)
+        conn = await asyncpg.connect(dsn=DATABASE_URL)
+
+        # 1. Извлекаем данные точно по вашей структуре
+        row = await conn.fetchrow("""
+            SELECT log_id, messenger_uid, text, intent_type 
+            FROM message_logs 
+            WHERE log_id = $1;
+        """, log_id)
+
+        if not row:
+            return
+
+        text_msg = row['text']
+        intent = row['intent_type']
+
+        # 2. Передаем в ИИ-клиент, если статус 'unknown'
+        if text_msg and intent == 'unknown':
+            # Здесь будет интеграция с вашим ollama_client.py на сервере:
+            # detected_intent = await generate_ai_reply(text_msg)
+            detected_intent = "material_order"  # Временный тег для проверки
+
+            # 3. Обновляем строку на сервере в реальном времени
+            await conn.execute("""
+                UPDATE message_logs 
+                SET intent_type = $1, validation_level = 2, is_valid = TRUE 
+                WHERE log_id = $2;
+            """, detected_intent, log_id)
+
+            print(f"✅ Конвейер ИИ: Запись {log_id} успешно обработана и обновлена!")
+
+    except Exception as e:
+        print(f"❌ Ошибка в серверном конвейере ИИ для log_id {payload_id}: {e}")
+    finally:
+        if conn:
+            await conn.close()
 
 
 async def db_notification_listener():
