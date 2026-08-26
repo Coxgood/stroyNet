@@ -121,32 +121,42 @@ async def generate_smart_response(text_msg: str, val_res: dict) -> str:
 
 
 # Функция, которая моментально сработает при появлении строки в message_logs
-async def process_new_message(payload_id: str):
-    """Боевой конвейер ИИ с гарантированной защитой от дублирования через ValueError"""
-    payload_str = payload_id.strip()
+import json
 
-    # 🚨 НАШ НОВЫЙ ЖЕЛЕЗНЫЙ ЗАСЛОН ОТ ДУБЛИКАТОВ:
+
+async def process_new_message(payload_id: str):
+    """Боевой конвейер ИИ: одинаково успешно понимает и чистые ID, и JSON-пакеты"""
+    payload_str = payload_id.strip()
+    log_id = None
+
+    # 🚨 УНИВЕРСАЛЬНЫЙ РАЗБОР СИГНАЛА:
     try:
-        # Пытаемся принудительно преобразовать в число.
-        # Если прилетит JSON (хоть с кавычками, хоть без), Python выбросит ValueError,
-        # и этот поток мгновенно остановится, не доходя до Ollama и инсертов!
-        log_id = int(payload_str)
-    except ValueError:
-        # Беззвучно выходим, так как это дублирующий JSON-сигнал от базы
+        if payload_str.startswith("{"):
+            # Если база прислала сигнал в формате JSON, бережно распаковываем его
+            data = json.loads(payload_str)
+            log_id = int(data.get("log_id"))
+            print(f"🧩 [СИГНАЛ БД] Распакован JSON. Успешно извлечен log_id: {log_id}")
+        else:
+            # Если база прислала сигнал в виде чистого числа-строки
+            log_id = int(payload_str)
+            print(f"🎯 [СИГНАЛ БД] Получен чистый числовой log_id: {log_id}")
+    except Exception as e:
+        # Если прилетел невалидный текст, который нельзя распарсить, выходим
+        print(f"🗑️ [ФИЛЬТР] Пропущен некорректный сигнал базы: {e}")
         return
 
+    if not log_id:
+        return
+
+    # --- ДАЛЬШЕ ВАШ НАДЕЖНЫЙ КОД БЕЗ ИЗМЕНЕНИЙ ---
     conn = None
     try:
-        print(f"🎯 [КОНВЕЙЕР ИИ] Переходим к точечной обработке log_id: {log_id}")
-
-        # 1. Открываем асинхронное соединение
+        print(f"🚀 [КОНВЕЙЕР ИИ] Начинаем обработку log_id: {log_id}")
         conn = await asyncpg.connect(dsn=DATABASE_URL)
 
-        # 2. Вытаскиваем нужные поля входящего сообщения
         row = await conn.fetchrow("""
             SELECT log_id, platform, chat_id, chat_type, messenger_uid, text, intent_type 
-            FROM message_logs 
-            WHERE log_id = $1;
+            FROM message_logs WHERE log_id = $1;
         """, log_id)
 
         if not row:
@@ -156,37 +166,25 @@ async def process_new_message(payload_id: str):
         text_msg = row['text']
         intent = row['intent_type']
 
-        # 3. Обрабатываем строго новые неизвестные сообщения
         if text_msg and (intent == 'unknown' or intent is None):
-            # Локальная быстрая валидация
             val_res = fast_surface_validate(text_msg)
-            print(f"🔍 Валидатор определил категорию: {val_res['intent_type']}")
-
-            # Запрос к Ollama за умным ответом или отчетом
             ai_reply = await generate_smart_response(text_msg, val_res)
 
-            # 4. Фиксируем входящую задачу в таблице логов (Переводим на Слой 2)
+            # Закрываем входящую задачу (Слой 2)
             await conn.execute("""
-                UPDATE message_logs 
-                SET intent_type = $1, validation_level = 2, is_valid = TRUE 
-                WHERE log_id = $2;
+                UPDATE message_logs SET intent_type = $1, validation_level = 2, is_valid = TRUE WHERE log_id = $2;
             """, val_res["intent_type"], log_id)
 
-            # 5. СТАВИМ РОВНО ОДНУ ЗАДАЧУ НА ОТПРАВКУ В НОВУЮ ТАБЛИЦУ ОЧЕРЕДИ
+            # Ставим ОДНУ чистую задачу на отправку
             await conn.execute("""
                 INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status) 
                 VALUES ($1, $2, $3, $4, 'pending');
-            """,
-                               row['platform'] if row['platform'] else 'max_platform',
-                               row['chat_id'] if row['chat_id'] else 'test_chat_777',
-                               uid,
-                               ai_reply.strip()
-                               )
-            print(
-                f"🎉 [КОНВЕЙЕР ИИ] Лог {log_id} успешно закрыт. Строка в outbound_messages создана в единственном экземпляре!")
+            """, row['platform'] if row['platform'] else 'max_platform',
+                               row['chat_id'] if row['chat_id'] else 'test_chat_777', uid, ai_reply.strip())
+            print(f"🎉 [КОНВЕЙЕР ИИ] Ответ для log_id {log_id} успешно отправлен в outbound_messages!")
 
     except Exception as e:
-        print(f"❌ Ошибка в обработчике конвейера ИИ для ID {log_id}: {e}")
+        print(f"❌ Ошибка конвейера ИИ для ID {log_id}: {e}")
     finally:
         if conn:
             await conn.close()
