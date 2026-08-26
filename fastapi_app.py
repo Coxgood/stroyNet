@@ -133,50 +133,59 @@ async def generate_smart_response(text_msg: str, val_res: dict) -> str:
 
 
 # Функция, которая моментально сработает при появлении строки в message_logs
-import json  # Убедитесь, что json импортирован в самом верху
-
-
 async def process_new_message(payload_id: str):
-    """Конвейер ИИ с автоматической защитой от JSON-нагрузки"""
+    """Конвейер ИИ с автоматической защитой от двойного сигнала (Число + JSON)"""
     print(f"📥 Конвейер: Получен сигнал. Сырой payload: {payload_id}")
 
     conn = None
     try:
-        # Проверяем: если прилетел JSON, вытаскиваем из него log_id
+        # Умная проверка: если база прислала JSON, выковыриваем log_id из него
         payload_str = payload_id.strip()
         if payload_str.startswith("{") and payload_str.endswith("}"):
             try:
                 data = json.loads(payload_str)
-                log_id = int(data.get("log_id"))  # Достаем log_id по ключу
+                log_id = int(data.get("log_id"))
+                print(f"🧩 Распакован JSON-сигнал. Достали log_id: {log_id}")
             except Exception:
-                print(f"⚠️ Не удалось распарсить JSON в payload: {payload_str}")
+                # Если это был чужой JSON без log_id, просто игнорируем его
                 return
         else:
-            # Если прилетело обычное число в виде строки
+            # Если база прислала чистое число в виде строки
             log_id = int(payload_str)
 
         print(f"🎯 Конвейер переходит к обработке log_id: {log_id}")
 
-        # ОСТАЛЬНОЙ ВАШ КОД БЕЗ ИЗМЕНЕНИЙ:
+        # 1. Подключаемся к базе для извлечения текста
         conn = await asyncpg.connect(dsn=DATABASE_URL)
         row = await conn.fetchrow("SELECT log_id, text, intent_type FROM message_logs WHERE log_id = $1;", log_id)
 
-        if not row or row['intent_type'] != 'unknown':
+        if not row:
+            print(f"⚠️ Строка {log_id} не найдена в базе.")
             return
 
         text_msg = row['text']
-        val_res = fast_surface_validate(text_msg)
-        ai_reply = await generate_smart_response(text_msg, val_res)
+        intent = row['intent_type']
 
-        await conn.execute("""
-            UPDATE message_logs 
-            SET intent_type = $1, validation_level = 2, is_valid = TRUE 
-            WHERE log_id = $2;
-        """, ai_reply.strip(), log_id)
-        print(f"🎉 Конвейер успешно обработал и сохранил ответ для log_id {log_id}")
+        # Обрабатываем строго новые неизвестные сообщения
+        if text_msg and (intent == 'unknown' or intent is None):
+            # 2. Вызываем ваш валидатор
+            val_res = fast_surface_validate(text_msg)
+            print(f"🔍 Валидатор определил категорию: {val_res['intent_type']}")
+
+            # 3. Вызываем Ollama за смарт-ответом (в режиме chat)
+            ai_reply = await generate_smart_response(text_msg, val_res)
+
+            # 4. Записываем живой ответ в БД для лиснера и ставим Level 2
+            await conn.execute("""
+                UPDATE message_logs 
+                SET intent_type = $1, validation_level = 2, is_valid = TRUE 
+                WHERE log_id = $2;
+            """, ai_reply.strip(), log_id)
+
+            print(f"🎉 Конвейер успешно обработал и сохранил ответ для log_id {log_id}")
 
     except Exception as e:
-        print(f"❌ Критическая ошибка разбора/обработки log_id {payload_id}: {e}")
+        print(f"❌ Ошибка в обработчике конвейера ИИ для payload {payload_id}: {e}")
     finally:
         if conn:
             await conn.close()
