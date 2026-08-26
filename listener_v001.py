@@ -175,28 +175,58 @@ async def send_ai_responses_to_max(session: aiohttp.ClientSession, pool: asyncpg
             await pool.release(conn)
 
 
-async def send_ai_responses_from_queue(session, pool):
-    """Смотрит в outbound_messages и отправляет ответы"""
-    conn = None
-    try:
-        conn = await pool.acquire()
-        rows = await conn.fetch("""
-            SELECT task_id, chat_id, messenger_uid, text 
-            FROM outbound_messages 
-            WHERE status = 'pending' 
-            ORDER BY task_id ASC LIMIT 5;
-        """)
-        for row in rows:
-            task_id, chat_id, uid, ai_text = row['task_id'], row['chat_id'], row['messenger_uid'], row['text']
-            payload = {"chat_id": chat_id if chat_id else uid, "text": ai_text}
-            async with session.post(f"{BASE_URL}/messages", json=payload) as resp:
-                if resp.status in (200, 201):
-                    await conn.execute("UPDATE outbound_messages SET status = 'sent', sent_at = NOW() WHERE task_id = $1;", task_id)
-    except Exception as e:
-        print(f"⚠️ Ошибка очереди отправки: {e}")
-    finally:
-        if conn:
-            await pool.release(conn)
+async def send_ai_responses_from_queue(session: aiohttp.ClientSession, pool: asyncpg.Pool):
+    """Фоновый воркер: КАЖДУЮ СЕКУНДУ независимо проверяет очередь и отправляет ответы"""
+    print("🚀 [ВОРКЕР ОТПРАВКИ] Успешно запущен и готов к обработке очереди.")
+
+    while True:
+        conn = None
+        try:
+            conn = await pool.acquire()
+
+            # Забираем только те задачи, которые стоят в очереди на отправку
+            rows = await conn.fetch("""
+                SELECT task_id, chat_id, messenger_uid, text 
+                FROM outbound_messages 
+                WHERE status = 'pending' 
+                ORDER BY task_id ASC 
+                LIMIT 5;
+            """)
+
+            for row in rows:
+                task_id = row['task_id']
+                chat_id = row['chat_id']
+                uid = row['messenger_uid']
+                ai_text = row['text']
+
+                print(f"📤 [ВОРКЕР] Найдена задача №{task_id} для пользователя {uid}. Пушим в MAX...")
+
+                payload = {
+                    "chat_id": chat_id if chat_id else uid,
+                    "text": ai_text
+                }
+
+                # Запрос на отправку в MAX (Убедитесь, что эндпоинт отправки верный)
+                async with session.post(f"{BASE_URL}/messages", json=payload) as resp:
+                    if resp.status in (200, 201):
+                        print(f"✈️ [ВОРКЕР] Сообщение №{task_id} успешно доставлено в MAX.")
+                        await conn.execute(
+                            "UPDATE outbound_messages SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE task_id = $1;",
+                            task_id)
+                    else:
+                        resp_text = await resp.text()
+                        print(f"❌ [ВОРКЕР] Ошибка MAX API {resp.status} для задачи №{task_id}: {resp_text}")
+                        await conn.execute("UPDATE outbound_messages SET status = 'failed' WHERE task_id = $1;",
+                                           task_id)
+
+        except Exception as e:
+            print(f"⚠️ [ВОРКЕР] КРИТИЧЕСКАЯ ОШИБКА В ОЧЕРЕДИ ОТПРАВКИ: {e}")
+        finally:
+            if conn:
+                await pool.release(conn)
+
+        # Спим ровно 1 секунду перед следующей проверкой базы данных
+        await asyncio.sleep(1)
 
 
 async def main():
@@ -220,20 +250,17 @@ async def main():
         marker = None
         print("🚀 Начинаю опрос MAX...")
 
-        while True:
-            # === 🎯 НАШЕ НЕУЯЗВИМОЕ ФОНОВОЕ РЕШЕНИЕ ===
-            # Запускаем проверку очереди как фоновую задачу (без слова await!).
-            # Теперь отправщик мгновенно заглянет в базу и вытолкнет отчет,
-            # пока основной цикл лиснера параллельно висит в 30-секундном опросе MAX.
-            asyncio.create_task(send_ai_responses_from_queue(session, pool))
-            # ==========================================
+        # 🚨 ЗАПУСКАЕМ НАШ НЕЗАВИСИМЫЙ ВОРКЕР В ФОНЕ ТУТ (Один раз):
+        # Он будет жить своей жизнью, проверять БД каждую секунду и не зависеть от Long Polling!
+        asyncio.create_task(send_ai_responses_from_queue(session, pool))
 
+        while True:
+            # ТУТ ТЕПЕРЬ СТЕРИЛЬНО ЧИСТО. Никаких вызовов отправщика!
             try:
                 params = {"timeout": 30}
                 if marker:
                     params["marker"] = marker
 
-                # Блокирующий длинный запрос (замораживает этот поток на 30 сек)
                 async with session.get(f"{BASE_URL}/updates", params=params) as response:
                     if response.status == 200:
                         updates = await response.json()
