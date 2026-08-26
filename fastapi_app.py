@@ -91,10 +91,41 @@ async def listen_for_messages():
 # =====================================================================
 # LIFECYCLE
 # =====================================================================
+async def generate_smart_response(text_msg: str, val_res: dict) -> str:
+    """
+    Генерирует умный ответ на основе типа сообщения, определенного валидатором.
+    """
+    intent_type = val_res.get("intent_type", "unknown")
+
+    # 1. Если локальный валидатор понял, что это просто разговор (болталка)
+    if intent_type == "chitchat":
+        print("💬 Режим: Болталка. Просим Ollama ответить вежливо и поддержать разговор.")
+        # Запускаем Ollama в обычном режиме чата
+        return await parse_with_ollama(text_msg, mode="chat")
+
+    # 2. Если это конкретная строительная задача (заказ бетона, арматуры, оси и т.д.)
+    elif intent_type == "construction_task":
+        print("🏗️ Режим: Строительная задача. Формируем строгий лаконичный промпт.")
+
+        # Передаем контекст прямо в промпт, чтобы модель вела себя как четкий диспетчер
+        strict_prompt = (
+            "Ты — лаконичный диспетчер строительной логистики. Твоя задача — подтвердить приём заявки. "
+            "Отвечай строго одной короткой фразой (не более 7 слов). Без лишних приветствий. "
+            "Пример: 'Принято в обработку: 5 кубов бетона на 3 секцию.'"
+        )
+        # Отправляем в Ollama (если ваш клиент поддерживает кастомный промпт),
+        # либо модель вернет ответ на основе текста.
+        return await parse_with_ollama(f"{strict_prompt}\n\nСообщение прораба: {text_msg}")
+
+    # 3. Если валидатор вообще ничего не понял (неизвестный тип)
+    else:
+        print("❓ Режим: Неизвестный контекст. Просим модель саму разобраться и ответить.")
+        return await parse_with_ollama(text_msg, mode="chat")
+
 
 # Функция, которая моментально сработает при появлении строки в message_logs
 async def process_new_message(payload_id: str):
-    """Прямой транспорт сообщений: БД -> Валидатор -> Ollama -> БД"""
+    """Конвейер ИИ: Принимает log_id -> Валидирует -> Получает Смарт-Ответ -> Пишет в БД"""
     print(f"📥 Конвейер: Получен сигнал для log_id {payload_id}")
 
     conn = None
@@ -102,7 +133,7 @@ async def process_new_message(payload_id: str):
         log_id = int(payload_id)
         conn = await asyncpg.connect(dsn=DATABASE_URL)
 
-        # 1. Стягиваем текст сообщения
+        # 1. Стягиваем входящий текст сообщения
         row = await conn.fetchrow("""
             SELECT log_id, text, intent_type 
             FROM message_logs 
@@ -118,40 +149,35 @@ async def process_new_message(payload_id: str):
         # Обрабатываем только новые необработанные сообщения
         if text_msg and (intent == 'unknown' or intent is None):
 
-            # ШАГ 2. ПЕРВИЧНАЯ ВАЛИДАЦИЯ (Словарь стоп-слов)
-            # Передаем текст в ваш валидатор. Если это мусор/тест — стопаем конвейер
-            if not fast_surface_validate(text_msg):
-                print(f"🚫 Сообщение {log_id} не прошло первичный валидатор (мусор/тест).")
-                await conn.execute("""
-                    UPDATE message_logs 
-                    SET intent_type = 'skipped_by_validator', is_valid = FALSE 
-                    WHERE log_id = $1;
-                """, log_id)
-                return
+            # ШАГ 2. ЛОКАЛЬНАЯ ВАЛИДАЦИЯ (Определяем тип: chitchat или задача)
+            val_res = fast_surface_validate(text_msg)
+            print(f"🔍 Валидатор определил категорию: {val_res['intent_type']}")
 
-            # ШАГ 3. ТРАНСПОРТ ДО OLLAMA
-            print(f"🚀 Валидация успешна. Отправляем текст в Ollama...")
+            # ШАГ 3. ВЫЗОВ УМНОГО ОТВЕТА
+            # Передаем текст и словарь валидации в нашу новую функцию
+            ai_reply = await generate_smart_response(text_msg, val_res)
 
-            # Передаем текст в вашу существующую функцию (она вернет живой ответ)
-            ai_reply = await parse_with_ollama(text_msg)
-
-            # ШАГ 4. ЗАПИСЬ ОТВЕТА В БД
-            # Обновляем интент ответом от ИИ и переводим на следующий слой
+            # ШАГ 4. ЗАПИСЬ ЖИВОГО ОТВЕТА В БД ДЛЯ ЛИСНЕРА
+            # Сохраняем сгенерированный ИИ ответ прямо в поле intent_type
+            # И переводим на validation_level = 2, чтобы лиснер его увидел и отправил
             await conn.execute("""
                 UPDATE message_logs 
                 SET intent_type = $1, 
+                    confidence_score = $2,
+                    priority = $3,
                     validation_level = 2, 
                     is_valid = TRUE 
-                WHERE log_id = $2;
-            """, ai_reply[:50], log_id)  # Ограничим до 50 символов для безопасности поля
+                WHERE log_id = $4;
+            """, ai_reply.strip(), val_res["confidence_score"], val_res["priority"], log_id)
 
-            print(f"🎉 Конвейер завершен! Ответ ИИ для {log_id} записан в базу.")
+            print(f"🎉 Конвейер завершен! Ответ готов для лиснера и лежит в БД для log_id {log_id}.")
 
     except Exception as e:
         print(f"❌ Ошибка транспорта сообщений: {e}")
     finally:
         if conn:
             await conn.close()
+
 
 
 async def db_notification_listener():

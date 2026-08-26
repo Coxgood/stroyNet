@@ -125,9 +125,58 @@ async def process_updates(updates, pool):
 
     return next_marker
 
+
+async def send_ai_responses_to_max(session: aiohttp.ClientSession, pool: asyncpg.Pool):
+    """Смотрит в БД, забирает готовые ответы ИИ и отправляет их прорабам"""
+    conn = None
+    try:
+        conn = await pool.acquire()
+        # 1. Ищем строки, где ИИ закончил генерацию (validation_level = 2)
+        rows = await conn.fetch("""
+            SELECT log_id, messenger_uid, intent_type 
+            FROM message_logs 
+            WHERE validation_level = 2 
+            ORDER BY log_id ASC 
+            LIMIT 5;
+        """)
+
+        for row in rows:
+            log_id = row['log_id']
+            uid = row['messenger_uid']
+            ai_answer = row['intent_type']  # Помним, что fastapi_app положил ответ сюда
+
+            print(f"📥 Найдена готовая задача {log_id} для {uid}. Отправляем в MAX...")
+
+            # 2. Формируем POST-запрос на отправку сообщения по правилам API MAX
+            payload = {
+                "chat_id": uid,
+                "text": ai_answer
+            }
+
+            # Отправляем через ту же сессию на правильный эндпоинт сообщений
+            async with session.post(f"{BASE_URL}/messages", json=payload) as resp:
+                if resp.status in (200, 201):
+                    print(f"✈️ Ответ ИИ доставлен прорабу {uid} (log_id: {log_id})")
+
+                    # 3. Успешно отправлено — переводим запись в архивный статус (level = 3)
+                    await conn.execute("""
+                        UPDATE message_logs 
+                        SET validation_level = 3 
+                        WHERE log_id = $1;
+                    """, log_id)
+                else:
+                    resp_text = await resp.text()
+                    print(f"❌ Ошибка MAX API {resp.status} для log_id {log_id}: {resp_text}")
+
+    except Exception as e:
+        print(f"⚠️ Ошибка в блоке отправки ответов ИИ: {e}")
+    finally:
+        if conn:
+            await pool.release(conn)
+
+
 async def main():
     print("🔌 Подключение к БД...")
-    print(f"🔌 Подключение к БД...DB_PASSWORD{DB_PASSWORD}DB_HOST{DB_HOST}DB_PORT{DB_PORT}DB_NAME{DB_NAME}DB_USER{DB_USER}")
     try:
         pool = await asyncpg.create_pool(
             user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT, database=DB_NAME,
@@ -138,6 +187,7 @@ async def main():
         print(f"❌ Ошибка БД: {e}")
         return
 
+    # Настройки заголовков: токен передается в чистом виде (БЕЗ Bearer) по правилам MAX
     headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
     connector = aiohttp.TCPConnector(ssl=False)
     print(f"🔗 Подключаюсь к MAX: {BASE_URL}")
@@ -147,6 +197,11 @@ async def main():
         print("🚀 Начинаю опрос MAX...")
 
         while True:
+            # === НАШ НОВЫЙ ШАГ ===
+            # Перед опросом новых обновлений проверяем, нет ли в базе ответов от ИИ для отправки
+            await send_ai_responses_to_max(session, pool)
+            # ======================
+
             try:
                 params = {"timeout": 30}
                 if marker:
@@ -173,6 +228,7 @@ async def main():
                 await asyncio.sleep(3)
 
             await asyncio.sleep(0.5)
+
 
 if __name__ == "__main__":
     try:
