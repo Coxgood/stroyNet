@@ -13,18 +13,6 @@ from validators import fast_surface_validate
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# Импортируем ваши модули валидации и ИИ
-# from validators import run_validation_level_2, run_validation_level_3
-
-#DB_USER = os.getenv("DB_USER", "postgres")
-#DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-#DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-#DB_PORT = os.getenv("DB_PORT", "5432")
-#DB_NAME = os.getenv("DB_NAME", "stroy_net")
-
-#DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
 db_pool = None
 listener_task = None
 
@@ -236,7 +224,7 @@ async def db_notification_listener():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Запускаем фонового слушателя параллельно с основным сервером FastAPI
-    listener_task = asyncio.create_task(db_notification_listener())
+    # listener_task = asyncio.create_task(db_notification_listener())
     yield
     # При остановке FastAPI корректно завершаем фоновую задачу
     listener_task.cancel()
