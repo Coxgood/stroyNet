@@ -175,6 +175,65 @@ async def send_ai_responses_to_max(session: aiohttp.ClientSession, pool: asyncpg
             await pool.release(conn)
 
 
+async def send_ai_responses_from_queue(session: aiohttp.ClientSession, pool: asyncpg.Pool):
+    """Смотрит в чистую очередь outbound_messages, отправляет ответы прорабам и закрывает задачи"""
+    conn = None
+    try:
+        conn = await pool.acquire()
+
+        # 1. Забираем только те задачи, которые стоят в очереди на отправку
+        rows = await conn.fetch("""
+            SELECT task_id, chat_id, messenger_uid, text 
+            FROM outbound_messages 
+            WHERE status = 'pending' 
+            ORDER BY task_id ASC 
+            LIMIT 5;
+        """)
+
+        for row in rows:
+            task_id = row['task_id']
+            chat_id = row['chat_id']
+            uid = row['messenger_uid']
+            ai_text = row['text']
+
+            print(f"📤 Найдена задача отправки №{task_id} для пользователя {uid}. Пушим в MAX...")
+
+            # Формируем POST-запрос по правилам вашей платформы MAX
+            payload = {
+                "chat_id": chat_id if chat_id else uid,
+                "text": ai_text
+            }
+
+            # 2. Отправляем сообщение на эндпоинт сообщений MAX
+            # (Замените /messages на ваш точный рабочий эндпоинт отправки, если он отличается)
+            async with session.post(f"{BASE_URL}/messages", json=payload) as resp:
+                if resp.status in (200, 201):
+                    print(f"✈️ Сообщение №{task_id} успешно доставлено в мессенджер MAX.")
+
+                    # 3. Фиксируем успех: меняем статус на 'sent' и пишем время отправки
+                    await conn.execute("""
+                        UPDATE outbound_messages 
+                        SET status = 'sent', sent_at = CURRENT_TIMESTAMP 
+                        WHERE task_id = $1;
+                    """, task_id)
+                else:
+                    resp_text = await resp.text()
+                    print(f"❌ Ошибка MAX API {resp.status} для задачи №{task_id}: {resp_text}")
+
+                    # В случае ошибки API можно временно пометить как 'failed'
+                    await conn.execute("""
+                        UPDATE outbound_messages 
+                        SET status = 'failed' 
+                        WHERE task_id = $1;
+                    """, task_id)
+
+    except Exception as e:
+        print(f"⚠️ Ошибка в блоке обработки очереди исходящих: {e}")
+    finally:
+        if conn:
+            await pool.release(conn)
+
+
 async def main():
     print("🔌 Подключение к БД...")
     try:

@@ -134,52 +134,77 @@ async def generate_smart_response(text_msg: str, val_res: dict) -> str:
 
 # Функция, которая моментально сработает при появлении строки в message_logs
 async def process_new_message(payload_id: str):
-    """Боевой конвейер: обрабатывает только чистый ID, игнорируя тяжелый JSON"""
+    """Боевой конвейер ИИ: принимает сигнал -> Валидирует -> Получает Ответ -> Разводит по таблицам"""
     payload_str = payload_id.strip()
 
-    # 🚨 НАШ ЖЕЛЕЗНЫЙ ПРЕДОХРАНИТЕЛЬ:
-    # Если прилетел JSON (начинается с фиг. скобки), мы его просто СБРАСЫВАЕМ.
-    # Мы не тратим ресурсы на его разбор, так как следом или перед ним
-    # база прислала нам этот же ID в виде чистого числа!
+    # Железный предохранитель: игнорируем JSON-дубликат сигнала
     if payload_str.startswith("{"):
         return
 
     conn = None
     try:
-        # Теперь мы на 100% уверены, что здесь гарантированно чистое число ID
         log_id = int(payload_str)
         print(f"🎯 [КОНВЕЙЕР ИИ] Переходим к точечной обработке log_id: {log_id}")
 
-        # 1. Подключаемся к базе по чистому URL из config.py
+        # 1. Открываем асинхронное соединение с БД сервера
         conn = await asyncpg.connect(dsn=DATABASE_URL)
 
-        # 2. Вытаскиваем строго только текст и текущий интент
-        row = await conn.fetchrow("SELECT log_id, text, intent_type FROM message_logs WHERE log_id = $1;", log_id)
+        # 2. Вытаскиваем нужные поля входящего сообщения
+        row = await conn.fetchrow("""
+            SELECT log_id, platform, chat_id, chat_type, messenger_uid, text, intent_type 
+            FROM message_logs 
+            WHERE log_id = $1;
+        """, log_id)
+
         if not row:
+            print(f"⚠️ Строка {log_id} не найдена в базе.")
             return
 
+        uid = row['messenger_uid']
         text_msg = row['text']
         intent = row['intent_type']
 
         # 3. Обрабатываем строго новые неизвестные сообщения
         if text_msg and (intent == 'unknown' or intent is None):
-            # Локальный быстрый маркер-валидатор
+            # Локальная быстрая валидация (прорабы/болталка)
             val_res = fast_surface_validate(text_msg)
+            print(f"🔍 Валидатор определил категорию: {val_res['intent_type']}")
 
-            # Запрос к вашей локальной Ollama qwen2.5
+            # Запрос к Ollama за умным ответом или самостоятельным отчетом
             ai_reply = await generate_smart_response(text_msg, val_res)
 
-            # 4. Сохраняем живой ответ в поле intent_type и переводим на Слой 2 для лиснера
+            # =====================================================================
+            # 🏁 ШАГ 4. ФИКСИРУЕМ ВХОДЯЩЕЕ СООБЩЕНИЕ В ТАБЛИЦЕ ЛОГОВ
+            # =====================================================================
+            # Ставим реальный тег валидатора (например, 'construction_task'),
+            # переводим на Слой 2. Входящая задача официально ЗАКРЫТА.
             await conn.execute("""
                 UPDATE message_logs 
-                SET intent_type = $1, validation_level = 2, is_valid = TRUE 
+                SET intent_type = $1, 
+                    validation_level = 2, 
+                    is_valid = TRUE 
                 WHERE log_id = $2;
-            """, ai_reply.strip(), log_id)
+            """, val_res["intent_type"], log_id)
 
-            print(f"🎉 [КОНВЕЙЕР ИИ] Ответ для log_id {log_id} успешно сгенерирован и сохранен!")
+            # =====================================================================
+            # 🚀 ШАГ 5. СТАВИМ ЗАДАЧУ НА ОТПРАВКУ В НОВУЮ ТАБЛИЦУ ОЧЕРЕДИ
+            # =====================================================================
+            # Создаем абсолютно новую независимую строку отчета/ответа для прораба.
+            # Ставим статус 'pending' (ожидает отправки). Лиснер заберёт её отсюда.
+            await conn.execute("""
+                INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status) 
+                VALUES ($1, $2, $3, $4, 'pending');
+            """,
+                               row['platform'] if row['platform'] else 'max_platform',
+                               row['chat_id'] if row['chat_id'] else 'test_chat_777',
+                               uid,  # messenger_uid получателя
+                               ai_reply.strip()  # Текст отчета / ответа ИИ
+                               )
+
+            print(f"🎉 [КОНВЕЙЕР ИИ] Лог {log_id} закрыт. Ответ успешно поставлен в очередь outbound_messages!")
 
     except Exception as e:
-        print(f"❌ Ошибка конвейера ИИ для ID {payload_str}: {e}")
+        print(f"❌ Ошибка в обработчике конвейера ИИ для ID {payload_str}: {e}")
     finally:
         if conn:
             await conn.close()
