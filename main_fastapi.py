@@ -6,9 +6,12 @@ import listener_v001
 
 async def start_fastapi():
     """Запуск веб-сервера FastAPI на порту 8000."""
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    # Передаем "fastapi_app:app" строкой, чтобы Uvicorn сам правильно
+    # импортировал и развернул приложение со всеми lifespan-событиями
+    config = uvicorn.Config("fastapi_app:app", host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
+
 
 async def main():
     """Параллельный запуск шлюза и единственного Long Polling лисенера."""
