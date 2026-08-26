@@ -221,18 +221,19 @@ async def main():
         print("🚀 Начинаю опрос MAX...")
 
         while True:
-            # === НАШ НОВЫЙ ШАГ ===
-            # Перед опросом новых обновлений проверяем, нет ли в базе ответов от ИИ для отправки
-            # await send_ai_responses_to_max(session, pool)
-            await send_ai_responses_from_queue(session, pool)
-
-            # ======================
+            # === 🎯 НАШЕ НЕУЯЗВИМОЕ ФОНОВОЕ РЕШЕНИЕ ===
+            # Запускаем проверку очереди как фоновую задачу (без слова await!).
+            # Теперь отправщик мгновенно заглянет в базу и вытолкнет отчет,
+            # пока основной цикл лиснера параллельно висит в 30-секундном опросе MAX.
+            asyncio.create_task(send_ai_responses_from_queue(session, pool))
+            # ==========================================
 
             try:
                 params = {"timeout": 30}
                 if marker:
                     params["marker"] = marker
 
+                # Блокирующий длинный запрос (замораживает этот поток на 30 сек)
                 async with session.get(f"{BASE_URL}/updates", params=params) as response:
                     if response.status == 200:
                         updates = await response.json()
