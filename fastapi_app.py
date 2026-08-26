@@ -1,10 +1,15 @@
 # fastapi_app.py
 import os
 import asyncio
+import asyncpg
 import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
-import asyncpg
+from config import DATABASE_URL
+from ollama_client import parse_with_ollama
+from validators import fast_surface_validate
+
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -89,20 +94,17 @@ async def listen_for_messages():
 
 # Функция, которая моментально сработает при появлении строки в message_logs
 async def process_new_message(payload_id: str):
-    """
-    Вызывается автоматически сервером FastAPI при срабатывании триггера.
-    payload_id — это прилетевший из БД log_id новой строки.
-    """
-    print(f"🔥 ИИ-Диспетчер: Найдена новая запись в message_logs с log_id {payload_id}!")
+    """Прямой транспорт сообщений: БД -> Валидатор -> Ollama -> БД"""
+    print(f"📥 Конвейер: Получен сигнал для log_id {payload_id}")
 
     conn = None
     try:
         log_id = int(payload_id)
         conn = await asyncpg.connect(dsn=DATABASE_URL)
 
-        # 1. Извлекаем данные точно по вашей структуре
+        # 1. Стягиваем текст сообщения
         row = await conn.fetchrow("""
-            SELECT log_id, messenger_uid, text, intent_type 
+            SELECT log_id, text, intent_type 
             FROM message_logs 
             WHERE log_id = $1;
         """, log_id)
@@ -113,23 +115,40 @@ async def process_new_message(payload_id: str):
         text_msg = row['text']
         intent = row['intent_type']
 
-        # 2. Передаем в ИИ-клиент, если статус 'unknown'
-        if text_msg and intent == 'unknown':
-            # Здесь будет интеграция с вашим ollama_client.py на сервере:
-            # detected_intent = await generate_ai_reply(text_msg)
-            detected_intent = "material_order"  # Временный тег для проверки
+        # Обрабатываем только новые необработанные сообщения
+        if text_msg and (intent == 'unknown' or intent is None):
 
-            # 3. Обновляем строку на сервере в реальном времени
+            # ШАГ 2. ПЕРВИЧНАЯ ВАЛИДАЦИЯ (Словарь стоп-слов)
+            # Передаем текст в ваш валидатор. Если это мусор/тест — стопаем конвейер
+            if not fast_surface_validate(text_msg):
+                print(f"🚫 Сообщение {log_id} не прошло первичный валидатор (мусор/тест).")
+                await conn.execute("""
+                    UPDATE message_logs 
+                    SET intent_type = 'skipped_by_validator', is_valid = FALSE 
+                    WHERE log_id = $1;
+                """, log_id)
+                return
+
+            # ШАГ 3. ТРАНСПОРТ ДО OLLAMA
+            print(f"🚀 Валидация успешна. Отправляем текст в Ollama...")
+
+            # Передаем текст в вашу существующую функцию (она вернет живой ответ)
+            ai_reply = await parse_with_ollama(text_msg)
+
+            # ШАГ 4. ЗАПИСЬ ОТВЕТА В БД
+            # Обновляем интент ответом от ИИ и переводим на следующий слой
             await conn.execute("""
                 UPDATE message_logs 
-                SET intent_type = $1, validation_level = 2, is_valid = TRUE 
+                SET intent_type = $1, 
+                    validation_level = 2, 
+                    is_valid = TRUE 
                 WHERE log_id = $2;
-            """, detected_intent, log_id)
+            """, ai_reply[:50], log_id)  # Ограничим до 50 символов для безопасности поля
 
-            print(f"✅ Конвейер ИИ: Запись {log_id} успешно обработана и обновлена!")
+            print(f"🎉 Конвейер завершен! Ответ ИИ для {log_id} записан в базу.")
 
     except Exception as e:
-        print(f"❌ Ошибка в серверном конвейере ИИ для log_id {payload_id}: {e}")
+        print(f"❌ Ошибка транспорта сообщений: {e}")
     finally:
         if conn:
             await conn.close()
