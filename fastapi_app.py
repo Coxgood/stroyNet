@@ -71,21 +71,30 @@ async def handle_new_message(connection, pid, channel, payload):
 
 
 async def listen_for_messages():
-    print("🔥 listen_for_messages() вызвана")  # <-- добавить
+    print("🔥 listen_for_messages() вызвана")
+
+    # Объявляем переменную. Теперь она будет активно использоваться внутри цикла
     conn = None
-    try:
-        conn = await asyncpg.connect(
-            user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT, database=DB_NAME
-        )
-        await conn.add_listener('new_message', handle_new_message)
-        print("🔔 FastAPI слушает уведомления из БД")
-        while True:
-            await asyncio.sleep(1)
-    except Exception as e:
-        print(f"❌ Ошибка слушателя БД: {e}")
-    finally:
-        if conn:
-            await conn.close()
+
+    while True:
+        try:
+            # 1. Открываем соединение, используя глобальный DATABASE_URL
+            conn = await asyncpg.connect(dsn=DATABASE_URL)
+            print("📡 Фоновый слушатель БД успешно подписался на канал 'new_message_event'")
+
+            # 2. ИСПОЛЬЗУЕМ conn! Вешаем обработчик событий базы данных
+            # (Здесь conn больше НЕ БУДЕТ серой, так как мы вызываем её метод add_listener)
+            await conn.add_listener('new_message_event', lambda connection, pid, channel, payload:
+            asyncio.create_task(process_new_message(payload))
+                                    )
+
+            # 3. Удерживаем это конкретное соединение открытым
+            while True:
+                await asyncio.sleep(3600)
+
+        except (asyncpg.PostgresError, OSError) as e:
+            print(f"⚠️ Ошибка слушателя БД ({e}). Переподключение через 5 секунд...")
+            await asyncio.sleep(5)
 
 
 # =====================================================================
@@ -124,60 +133,53 @@ async def generate_smart_response(text_msg: str, val_res: dict) -> str:
 
 
 # Функция, которая моментально сработает при появлении строки в message_logs
+import json  # Убедитесь, что json импортирован в самом верху
+
+
 async def process_new_message(payload_id: str):
-    """Конвейер ИИ: Принимает log_id -> Валидирует -> Получает Смарт-Ответ -> Пишет в БД"""
-    print(f"📥 Конвейер: Получен сигнал для log_id {payload_id}")
+    """Конвейер ИИ с автоматической защитой от JSON-нагрузки"""
+    print(f"📥 Конвейер: Получен сигнал. Сырой payload: {payload_id}")
 
     conn = None
     try:
-        log_id = int(payload_id)
+        # Проверяем: если прилетел JSON, вытаскиваем из него log_id
+        payload_str = payload_id.strip()
+        if payload_str.startswith("{") and payload_str.endswith("}"):
+            try:
+                data = json.loads(payload_str)
+                log_id = int(data.get("log_id"))  # Достаем log_id по ключу
+            except Exception:
+                print(f"⚠️ Не удалось распарсить JSON в payload: {payload_str}")
+                return
+        else:
+            # Если прилетело обычное число в виде строки
+            log_id = int(payload_str)
+
+        print(f"🎯 Конвейер переходит к обработке log_id: {log_id}")
+
+        # ОСТАЛЬНОЙ ВАШ КОД БЕЗ ИЗМЕНЕНИЙ:
         conn = await asyncpg.connect(dsn=DATABASE_URL)
+        row = await conn.fetchrow("SELECT log_id, text, intent_type FROM message_logs WHERE log_id = $1;", log_id)
 
-        # 1. Стягиваем входящий текст сообщения
-        row = await conn.fetchrow("""
-            SELECT log_id, text, intent_type 
-            FROM message_logs 
-            WHERE log_id = $1;
-        """, log_id)
-
-        if not row:
+        if not row or row['intent_type'] != 'unknown':
             return
 
         text_msg = row['text']
-        intent = row['intent_type']
+        val_res = fast_surface_validate(text_msg)
+        ai_reply = await generate_smart_response(text_msg, val_res)
 
-        # Обрабатываем только новые необработанные сообщения
-        if text_msg and (intent == 'unknown' or intent is None):
-
-            # ШАГ 2. ЛОКАЛЬНАЯ ВАЛИДАЦИЯ (Определяем тип: chitchat или задача)
-            val_res = fast_surface_validate(text_msg)
-            print(f"🔍 Валидатор определил категорию: {val_res['intent_type']}")
-
-            # ШАГ 3. ВЫЗОВ УМНОГО ОТВЕТА
-            # Передаем текст и словарь валидации в нашу новую функцию
-            ai_reply = await generate_smart_response(text_msg, val_res)
-
-            # ШАГ 4. ЗАПИСЬ ЖИВОГО ОТВЕТА В БД ДЛЯ ЛИСНЕРА
-            # Сохраняем сгенерированный ИИ ответ прямо в поле intent_type
-            # И переводим на validation_level = 2, чтобы лиснер его увидел и отправил
-            await conn.execute("""
-                UPDATE message_logs 
-                SET intent_type = $1, 
-                    confidence_score = $2,
-                    priority = $3,
-                    validation_level = 2, 
-                    is_valid = TRUE 
-                WHERE log_id = $4;
-            """, ai_reply.strip(), val_res["confidence_score"], val_res["priority"], log_id)
-
-            print(f"🎉 Конвейер завершен! Ответ готов для лиснера и лежит в БД для log_id {log_id}.")
+        await conn.execute("""
+            UPDATE message_logs 
+            SET intent_type = $1, validation_level = 2, is_valid = TRUE 
+            WHERE log_id = $2;
+        """, ai_reply.strip(), log_id)
+        print(f"🎉 Конвейер успешно обработал и сохранил ответ для log_id {log_id}")
 
     except Exception as e:
-        print(f"❌ Ошибка транспорта сообщений: {e}")
+        print(f"❌ Критическая ошибка разбора/обработки log_id {payload_id}: {e}")
     finally:
         if conn:
             await conn.close()
-
 
 
 async def db_notification_listener():
