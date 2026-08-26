@@ -87,23 +87,55 @@ async def listen_for_messages():
 # LIFECYCLE
 # =====================================================================
 
+# Функция, которая моментально сработает при появлении строки в message_logs
+async def process_new_message(message_id: str):
+    print(f"🔥 ИИ-Диспетчер: Найдена новая запись в message_logs с ID {message_id}!")
+
+    # Сюда вставляем логику обработки. Например, достаем эту запись из базы по ID:
+    # conn = await asyncpg.connect(dsn=DATABASE_URL)
+    # row = await conn.fetchrow("SELECT text FROM message_logs WHERE id = $1", int(message_id))
+    # print(f"Текст сообщения: {row['text']}")
+    # await conn.close()
+
+
+async def db_notification_listener():
+    """Фоновый процесс, который держит постоянное соединение и слушает триггер"""
+    while True:
+        try:
+            # Открываем отдельное выделенное подключение для прослушивания канала
+            conn = await asyncpg.connect(dsn=DATABASE_URL)
+            print("📡 Фоновый слушатель БД успешно подписался на канал 'new_message_event'")
+
+            # Регистрируем наш обработчик (колбэк) на событие из базы
+            await conn.add_listener('new_message_event', lambda connection, pid, channel, payload:
+            asyncio.create_task(process_new_message(payload))
+                                    )
+
+            # Держим соединение активным (спим, пока не прилетит уведомление)
+            while True:
+                await asyncio.sleep(3600)
+
+        except (asyncpg.PostgresError, OSError) as e:
+            print(f"⚠️ Ошибка слушателя БД ({e}). Переподключение через 5 секунд...")
+            await asyncio.sleep(5)
+
+
+# Интегрируем в жизненный цикл FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db_pool, listener_task
+    # Запускаем фонового слушателя параллельно с основным сервером FastAPI
+    listener_task = asyncio.create_task(db_notification_listener())
+    yield
+    # При остановке FastAPI корректно завершаем фоновую задачу
+    listener_task.cancel()
     try:
-        db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
-        print("⚡ Пул FastAPI запущен. Только для обслуживания ручек.")
+        await listener_task
+    except asyncio.CancelledError:
+        print("🛑 Фоновый слушатель БД остановлен.")
 
-        # Запускаем слушатель уведомлений
-        listener_task = asyncio.create_task(listen_for_messages())
-        print("🔔 Слушатель уведомлений запущен")
 
-        yield
-    finally:
-        if listener_task:
-            listener_task.cancel()
-        if db_pool:
-            await db_pool.close()
+# Регистрируем lifespan в вашем FastAPI приложении
+app = FastAPI(lifespan=lifespan)
 
 
 app = FastAPI(title="StroyNet API Gateway", lifespan=lifespan)
