@@ -79,8 +79,9 @@ async def save_inbound_log(pool, chat_id, messenger_uid, text, **kwargs):
         print(f"❌ Ошибка записи в БД: {e}")
         raise
 
+
 async def process_updates(updates: dict, pool: asyncpg.Pool):
-    """Обрабатывает входящие обновления от MAX."""
+    """Обрабатывает входящие обновления от MAX, полностью игнорируя группы."""
     if not isinstance(updates, dict):
         return None
 
@@ -92,12 +93,23 @@ async def process_updates(updates: dict, pool: asyncpg.Pool):
     for event in events:
         if event.get("update_type") == "message_created" and event.get("message"):
             msg = event["message"]
+
+            # 🚨 НАШ ЖЕСТКИЙ ФИЛЬТР ГРУПП:
+            # Извлекаем тип чата из объекта получателя (recipient)
+            recipient = msg.get("recipient", {})
+            chat_type = recipient.get("chat_type")
+
+            # Если это не личный диалог ("dialog"), полностью сбрасываем событие.
+            # Бот проигнорирует группу, не запишет строку в базу и не вызовет Ollama!
+            if chat_type != "dialog":
+                continue
+
             user_id = str(msg.get("sender", {}).get("user_id", ""))
             first_name = msg.get("sender", {}).get("first_name", "Строитель")
             last_name = msg.get("sender", {}).get("last_name", "Новый")
-            chat_id = str(msg.get("recipient", {}).get("chat_id", ""))
+            chat_id = str(recipient.get("chat_id", ""))
 
-            print(f"📩 Сообщение от {first_name} (ID: {user_id})")
+            print(f"📩 Личное сообщение от {first_name} (ID: {user_id})")
 
             # Регистрируем сотрудника
             employee_id = await ensure_employee_exists(pool, user_id, first_name, last_name)
