@@ -176,15 +176,15 @@ async def send_ai_responses_to_max(session: aiohttp.ClientSession, pool: asyncpg
 
 
 async def send_ai_responses_from_queue(session: aiohttp.ClientSession, pool: asyncpg.Pool):
-    """Фоновый воркер: КАЖДУЮ СЕКУНДУ независимо проверяет очередь и отправляет ответы"""
-    print("🚀 [ВОРКЕР ОТПРАВКИ] Успешно запущен и готов к обработке очереди.")
+    """Фоновый воркер: отправляет сообщения по стопроцентно проверенным правилам MAX API"""
+    print("🚀 [ВОРКЕР ОТПРАВКИ] Запущен по боевой схеме и готов разносить отчеты ИИ!")
 
     while True:
         conn = None
         try:
             conn = await pool.acquire()
 
-            # Забираем только те задачи, которые стоят в очереди на отправку
+            # Извлекаем новые задачи из очереди отправки
             rows = await conn.fetch("""
                 SELECT task_id, chat_id, messenger_uid, text 
                 FROM outbound_messages 
@@ -195,37 +195,50 @@ async def send_ai_responses_from_queue(session: aiohttp.ClientSession, pool: asy
 
             for row in rows:
                 task_id = row['task_id']
-                chat_id = row['chat_id']
                 uid = row['messenger_uid']
                 ai_text = row['text']
 
-                print(f"📤 [ВОРКЕР] Найдена задача №{task_id} для пользователя {uid}. Пушим в MAX...")
+                # 🎯 ПРАВИЛО ПОБЕДЫ: Назначение передаем строго в URL как ?user_id=
+                url = f"https://platform-api2.max.ru/messages?user_id={uid}"
 
-                payload = {
-                    "chat_id": chat_id if chat_id else uid,
-                    "text": ai_text
+                # Токен шлем в чистом виде без Bearer
+                headers = {
+                    "Authorization": MAX_TOKEN,
+                    "Content-Type": "application/json"
                 }
 
-                # Запрос на отправку в MAX (Убедитесь, что эндпоинт отправки верный)
-                async with session.post(f"{BASE_URL}/messages", json=payload) as resp:
+                # В теле запроса передаем только чистый текст
+                payload = {"text": ai_text}
+
+                print(f"📤 [ВОРКЕР] Пушим ИИ-отчет задачи №{task_id} пользователю {uid}...")
+
+                # Делаем точечный POST-запрос, удерживая сессию от редиректов
+                async with session.post(url, json=payload, headers=headers, ssl=False, allow_redirects=False) as resp:
                     if resp.status in (200, 201):
-                        print(f"✈️ [ВОРКЕР] Сообщение №{task_id} успешно доставлено в MAX.")
-                        await conn.execute(
-                            "UPDATE outbound_messages SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE task_id = $1;",
-                            task_id)
+                        print(f"✈️ [ВОРКЕР] Сообщение №{task_id} успешно доставлено прорабу в чат!")
+                        # Закрываем задачу в статусе 'sent'
+                        await conn.execute("""
+                            UPDATE outbound_messages 
+                            SET status = 'sent', sent_at = CURRENT_TIMESTAMP 
+                            WHERE task_id = $1;
+                        """, task_id)
                     else:
                         resp_text = await resp.text()
-                        print(f"❌ [ВОРКЕР] Ошибка MAX API {resp.status} для задачи №{task_id}: {resp_text}")
-                        await conn.execute("UPDATE outbound_messages SET status = 'failed' WHERE task_id = $1;",
-                                           task_id)
+                        print(f"❌ [ВОРКЕР] Отказ MAX API {resp.status} для задачи №{task_id}: {resp_text}")
+                        # В случае ошибки переводим в 'failed', чтобы не зацикливать систему
+                        await conn.execute("""
+                            UPDATE outbound_messages 
+                            SET status = 'failed' 
+                            WHERE task_id = $1;
+                        """, task_id)
 
         except Exception as e:
-            print(f"⚠️ [ВОРКЕР] КРИТИЧЕСКАЯ ОШИБКА В ОЧЕРЕДИ ОТПРАВКИ: {e}")
+            print(f"⚠️ [ВОРКЕР] Ошибка в цикле воркера очереди отправки: {e}")
         finally:
             if conn:
                 await pool.release(conn)
 
-        # Спим ровно 1 секунду перед следующей проверкой базы данных
+        # Проверяем базу данных каждую секунду
         await asyncio.sleep(1)
 
 
