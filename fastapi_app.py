@@ -90,14 +90,14 @@ async def listen_for_messages():
 # =====================================================================
 # Внутри fastapi_app.py
 
-async def generate_smart_response(text_msg: str, val_res: dict, messenger_uid: str) -> str:
+async def generate_smart_response(text_msg: str, val_res: dict, messenger_uid: str, conn) -> str:
     """Генерирует ответ на основе данных, полученных из модуля базы данных."""
 
     # 🚀 СУПЕР-ПРОСТОЙ И ЧИСТЫЙ ВЫЗОВ ИЗ МОДУЛЯ БД:
     # (Предполагаем, что класс инициализирован как db, либо делаем: db = DBManager(); db.pool = db_pool)
     from database import db
 
-    context = await db.get_full_user_context(messenger_uid, pool=db_pool)
+    context = await db.get_full_user_context(messenger_uid, conn=conn)
 
     # СТРОГИЙ ФИЛЬТР: Если метода не вернул данные (нет в белом списке) — отказ
     if not context:
@@ -184,7 +184,7 @@ async def process_new_message(payload_id: str):
         val_res = fast_surface_validate(text_msg)
 
         print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
-        ai_reply = await generate_smart_response(text_msg, val_res, row['messenger_uid'])
+        ai_reply = await generate_smart_response(text_msg, val_res, row['messenger_uid'], conn)
         print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {ai_reply[:30]}...")
 
         # Запись в очередь
