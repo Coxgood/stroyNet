@@ -88,48 +88,60 @@ async def listen_for_messages():
 # =====================================================================
 # LIFECYCLE
 # =====================================================================
-async def generate_smart_response(text_msg: str, val_res: dict) -> str:
-    """Генерирует умный ответ. Данные сотрудника зашиты жестко внутри функции."""
+# Внутри fastapi_app.py
+
+async def generate_smart_response(text_msg: str, val_res: dict, messenger_uid: str) -> str:
+    """Генерирует ответ на основе данных, полученных из модуля базы данных."""
+
+    # 🚀 СУПЕР-ПРОСТОЙ И ЧИСТЫЙ ВЫЗОВ ИЗ МОДУЛЯ БД:
+    # (Предполагаем, что класс инициализирован как db, либо делаем: db = DBManager(); db.pool = db_pool)
+    from database import db
+
+    context = await db.get_full_user_context(messenger_uid)
+
+    # СТРОГИЙ ФИЛЬТР: Если метода не вернул данные (нет в белом списке) — отказ
+    if not context:
+        print(f" 🛑 [ФИЛЬТР] UID {messenger_uid} отсутствует в белом списке. Отклонено.")
+        return "⚠️ Доступ к ИИ-диспетчеру StroyNet ограничен. Обратитесь к администратору для добавления в белый список."
+
+    # Спокойно забираем чистые переменные из словаря
+    user_name = context["first_name"]
+    user_role = context["positions"]
+    user_company = context["organizations"]
+    site_name = context["objects"]
+    history_list = context["history"]
+
+    # Формируем красивую историю диалога
+    history_context = ""
+    if len(history_list) > 1:
+        past_messages = list(reversed(history_list))[1:]
+        history_lines = [f"- Предыдущее сообщение прораба: '{msg}'" for msg in past_messages]
+        history_context = "\nКОНТЕКСТ ПРЕДЫДУЩЕЙ БЕСЕДЫ:\n" + "\n".join(history_lines)
+
     intent_type = val_res.get("intent_type", "unknown")
 
-    # 1. Если локальный валидатор определил болталку
     if intent_type == "chitchat":
-        print(" [FastAPI] Режим: Болталка. Запуск со стандартным промптом.")
-        # Передаем просто строку, без именованных аргументов system_prompt=
-        basic_prompt = "Ты — вежливый строительный ИИ-помощник компании ООО СК «ЕЛС». Ответь дружелюбно."
+        basic_prompt = f"Ты — вежливый ИИ-помощник компании {user_company}. Ответь сотруднику по имени {user_name}."
         return await parse_with_ollama(f"{basic_prompt}\n\n{text_msg}")
 
-    # 2. Если это конкретная строительная задача (заказ техники, геодезия, материалы)
     elif intent_type == "construction_task":
-        print(" [FastAPI] Режим: Строительная задача. Применяем жесткий контекст Константина.")
-
-        # НАШИ ЖЕСТКИЕ ПЕРЕМЕННЫЕ КОНТЕКСТА:
-        mock_user_name = "Константин"
-        mock_role = "геодезист"
-        mock_company = "ООО СК «ЕЛС»"
-        mock_site_name = "ЖК «Соцветие»"
-
-        # Собираем динамический промпт на основе ваших переменных
         build_system_prompt = (
             f"Ты — профессиональный ИИ-диспетчер строительной компании «StroyNet». "
-            f"Сейчас ты общаешься с сотрудником компании {mock_company}. "
-            f"Его имя: {mock_user_name}, должность: {mock_role}. "
-            f"Его строительный объект: {mock_site_name}. "
-            f"ОБЯЗАТЕЛЬНО начни свой ответ с приветствия: 'Здравствуйте, {mock_user_name}!'. "
-            f"Четко подтверди приём заявки для объекта {mock_site_name} от лица компании {mock_company}. "
-            f"Отвечай строго одной живой, человеческой фразой (не более 20 слов)."
+            f"Сейчас ты общаешься с сотрудником компании {user_company}. "
+            f"Его имя: {user_name}, должность: {user_role}. "
+            f"Его строительный объект: {site_name}. "
+            f"{history_context}\n\n"
+            f"ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА ДЛЯ ОТВЕТА ДИСПЕТЧЕРА:\n"
+            f"1. ОБЯЗАТЕЛЬНО начни свой ответ с приветствия: 'Здравствуйте, {user_name}!'.\n"
+            f"2. Четко подтверди приём текущей заявки для объекта {site_name} от лица компании {user_company}.\n"
+            f"3. Учитывай контекст предыдущей беседы, если текущее сообщение является продолжением мысли.\n"
+            f"4. Отвечай строго одной живой фразой (не более 20 слов)."
         )
-
-        # Склеиваем промпт и сообщение прораба перед отправкой
-        full_prompt = f"{build_system_prompt}\n\nСообщение прораба: {text_msg}\nОтвет диспетчера:"
-
-        # 🚀 ИСПРАВЛЕНИЕ: Передаем аргумент позиционно (просто переменную full_prompt)
+        full_prompt = f"{build_system_prompt}\n\nТекущее сообщение прораба: {text_msg}\nОтвет диспетчера:"
         return await parse_with_ollama(full_prompt)
 
-    # 3. Если тип неизвестен
     else:
-        print(" [FastAPI] Режим: Неизвестный контекст. Базовая обработка.")
-        fallback_prompt = "Ты — ИИ-диспетчер строительной логистики компании ООО СК «ЕЛС». Отвечай вежливо и по делу."
+        fallback_prompt = f"Ты — ИИ-диспетчер логистики компании {user_company}. Отвечай вежливо сотруднику {user_name}."
         return await parse_with_ollama(f"{fallback_prompt}\n\n{text_msg}")
 
 

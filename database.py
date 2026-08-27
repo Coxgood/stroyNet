@@ -42,6 +42,56 @@ class DBManager:
                 validation_level, validation_score, source_type, access_level
             )
 
+    async def get_full_user_context(self, messenger_uid: str) -> Optional[dict]:
+        """
+        УРОВЕНЬ 3: Извлечение Many-to-Many контекста сотрудника
+        и истории его последних 3 сообщений для ИИ.
+        """
+        if not self.pool:
+            raise Exception("БД не подключена")
+
+        query = """
+            WITH user_data AS (
+                SELECT 
+                    e.employee_id,
+                    e.first_name,
+                    COALESCE(string_agg(DISTINCT em.role, ', '), 'сотрудник') AS positions,
+                    COALESCE(string_agg(DISTINCT o.title, ', '), 'подрядная организация') AS organizations,
+                    COALESCE(string_agg(DISTINCT b.object_name, ', '), 'Объект строительства') AS objects
+                FROM employee_accounts ea
+                JOIN employees e ON ea.employee_id = e.employee_id
+                LEFT JOIN employment em ON e.employee_id = em.employee_id
+                LEFT JOIN organizations o ON em.organization_id = o.organization_id
+                LEFT JOIN employee_build_objects ebo ON e.employee_id = ebo.employee_id
+                LEFT JOIN build_objects b ON ebo.object_id = b.object_id
+                WHERE ea.messenger_uid = $1
+                GROUP BY e.employee_id, e.first_name
+            ),
+            chat_history AS (
+                SELECT text 
+                FROM message_logs 
+                WHERE messenger_uid = $1 AND direction = 'inbound'
+                ORDER BY log_id DESC 
+                LIMIT 3
+            )
+            SELECT 
+                ud.first_name, ud.positions, ud.organizations, ud.objects,
+                (SELECT json_agg(text) FROM chat_history) AS history
+            FROM user_data ud;
+        """
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, str(messenger_uid))
+            if row:
+                return {
+                    "first_name": row["first_name"],
+                    "positions": row["positions"],
+                    "organizations": row["organizations"],
+                    "objects": row["objects"],
+                    "history": row["history"] or []
+                }
+            return None
+
     async def check_user_exists_by_uid(self, messenger_uid: str) -> bool:
         """🛡️ УРОВЕНЬ 2: Проверка допуска прораба (Демо-заглушка).
 
