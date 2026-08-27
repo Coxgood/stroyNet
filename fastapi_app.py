@@ -90,66 +90,37 @@ async def listen_for_messages():
 # =====================================================================
 # Внутри fastapi_app.py
 
-async def generate_smart_response(text_msg: str, val_res: dict, messenger_uid: str, conn) -> str:
-    """Генерирует ответ на основе данных, полученных из модуля базы данных."""
-
-    # 🚀 СУПЕР-ПРОСТОЙ И ЧИСТЫЙ ВЫЗОВ ИЗ МОДУЛЯ БД:
-    # (Предполагаем, что класс инициализирован как db, либо делаем: db = DBManager(); db.pool = db_pool)
-    from database import db
-
-    context = await db.get_full_user_context(messenger_uid, conn=conn)
-
-    # СТРОГИЙ ФИЛЬТР: Если метода не вернул данные (нет в белом списке) — отказ
-    if not context:
-        print(f" 🛑 [ФИЛЬТР] UID {messenger_uid} отсутствует в белом списке. Отклонено.")
-        return "⚠️ Доступ к ИИ-диспетчеру StroyNet ограничен. Обратитесь к администратору для добавления в белый список."
-
-    # Спокойно забираем чистые переменные из словаря
-    user_name = context["first_name"]
-    user_role = context["positions"]
-    user_company = context["organizations"]
-    site_name = context["objects"]
-    history_list = context["history"]
-
-    # Формируем красивую историю диалога
-    history_context = ""
-    if len(history_list) > 1:
-        past_messages = list(reversed(history_list))[1:]
-        history_lines = [f"- Предыдущее сообщение прораба: '{msg}'" for msg in past_messages]
-        history_context = "\nКОНТЕКСТ ПРЕДЫДУЩЕЙ БЕСЕДЫ:\n" + "\n".join(history_lines)
-
+async def generate_smart_response(text_msg: str, val_res: dict) -> str:
+    """Генерирует умный простой ответ на основе типа сообщения (СТАРТОВОЕ СОСТОЯНИЕ)."""
     intent_type = val_res.get("intent_type", "unknown")
 
+    # 1. Если локальный валидатор определил болталку
     if intent_type == "chitchat":
-        basic_prompt = f"Ты — вежливый ИИ-помощник компании {user_company}. Ответь сотруднику по имени {user_name}."
-        return await parse_with_ollama(f"{basic_prompt}\n\n{text_msg}")
+        print(" [FastAPI] Режим: Болталка. Ollama отвечает вежливо.")
+        return await parse_with_ollama(text_msg, mode="chat")
 
+    # 2. Если это конкретная строительная задача (заказ бетона, арматуры и т.д.)
     elif intent_type == "construction_task":
-        build_system_prompt = (
-            f"Ты — профессиональный ИИ-диспетчер строительной компании «StroyNet». "
-            f"Сейчас ты общаешься с сотрудником компании {user_company}. "
-            f"Его имя: {user_name}, должность: {user_role}. "
-            f"Его строительный объект: {site_name}. "
-            f"{history_context}\n\n"
-            f"ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА ДЛЯ ОТВЕТА ДИСПЕТЧЕРА:\n"
-            f"1. ОБЯЗАТЕЛЬНО начни свой ответ с приветствия: 'Здравствуйте, {user_name}!'.\n"
-            f"2. Четко подтверди приём текущей заявки для объекта {site_name} от лица компании {user_company}.\n"
-            f"3. Учитывай контекст предыдущей беседы, если текущее сообщение является продолжением мысли.\n"
-            f"4. Отвечай строго одной живой фразой (не более 20 слов)."
+        print(" [FastAPI] Режим: Строительная задача. Применяем базовый промпт на 20 слов.")
+
+        # Наш стартовый автономный промпт диспетчера
+        strict_prompt = (
+            "Ты — диспетчер строительной логистики. Твоя задача — подтвердить приём заявки. "
+            "Отвечай одной фразой (не более 20 слов)."
         )
-        full_prompt = f"{build_system_prompt}\n\nТекущее сообщение прораба: {text_msg}\nОтвет диспетчера:"
+
+        # Склеиваем промпт и сообщение прораба
+        full_prompt = f"{strict_prompt}\n\nСообщение прораба: {text_msg}\nОтвет диспетчера:"
         return await parse_with_ollama(full_prompt)
 
+    # 3. Неизвестный контекст
     else:
-        fallback_prompt = f"Ты — ИИ-диспетчер логистики компании {user_company}. Отвечай вежливо сотруднику {user_name}."
-        return await parse_with_ollama(f"{fallback_prompt}\n\n{text_msg}")
-
-
-# Функция, которая моментально сработает при появлении строки в message_logs
-import json
+        print(" [FastAPI] Режим: Неизвестный контекст. Автономный ответ.")
+        return await parse_with_ollama(text_msg, mode="chat")
 
 
 async def process_new_message(payload_id: str):
+    """Основной конвейер обработки сообщения."""
     payload_str = payload_id.strip()
     log_id = None
     try:
@@ -159,7 +130,7 @@ async def process_new_message(payload_id: str):
         else:
             log_id = int(payload_str)
     except Exception as e:
-        print(f"🗑️ [ФИЛЬТР] Ошибка парсинга: {e}")
+        print(f" [ФИЛЬТР] Ошибка парсинга: {e}")
         return
 
     if not log_id:
@@ -167,16 +138,16 @@ async def process_new_message(payload_id: str):
 
     conn = None
     try:
-        print(f"🔹 [ШАГ 1] Подключаюсь к БД для ID {log_id}")
+        print(f"\n🔹 [ШАГ 1] Подключаюсь к БД для ID {log_id}")
         conn = await asyncpg.connect(dsn=DATABASE_URL)
 
         row = await conn.fetchrow("""
-            SELECT log_id, platform, chat_id, chat_type, messenger_uid, text, intent_type 
+            SELECT log_id, platform, chat_id, chat_type, messenger_uid, text, intent_type
             FROM message_logs WHERE log_id = $1;
         """, log_id)
 
         if not row:
-            print(f"⚠️ [ШАГ 1] Строка {log_id} не найдена в базе!")
+            print(f" [ШАГ 1] Строка {log_id} не найдена в базе!")
             return
 
         text_msg = row['text']
@@ -184,22 +155,24 @@ async def process_new_message(payload_id: str):
         val_res = fast_surface_validate(text_msg)
 
         print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
-        ai_reply = await generate_smart_response(text_msg, val_res, row['messenger_uid'], conn)
+        # 🚀 ИСПРАВЛЕНИЕ: Вызываем строго 2 базовых аргумента, без усложнений и conn!
+        ai_reply = await generate_smart_response(text_msg, val_res)
         print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {ai_reply[:30]}...")
 
-        # Запись в очередь
+        # Запись в outbound_messages (или обновление message_logs под ваш транспорт)
         await conn.execute("""
-            INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status) 
+            INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
             VALUES ($1, $2, $3, $4, 'pending');
         """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
                            ai_reply.strip())
-        print(f"🎉 [ШАГ 5] Успешно записано в outbound_messages!")
+        print(f"🔹 [ШАГ 5] Успешно записано в outbound_messages!")
 
     except Exception as e:
-        print(f"❌ [ОШИБКА] Ошибка в процессе обработки ID {log_id}: {e}")
+        print(f"❌ [КРИШЕК] Ошибка в процессе обработки ID {log_id}: {e}")
     finally:
         if conn:
             await conn.close()
+            print("🔗 Соединение conn успешно закрыто.")
 
 
 async def db_notification_listener():
