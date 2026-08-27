@@ -157,8 +157,14 @@ async def process_new_message(payload_id: str):
 
         print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
         # 🚀 ИСПРАВЛЕНИЕ: Вызываем строго 2 базовых аргумента, без усложнений и conn!
-        ai_reply = await generate_smart_response(text_msg, val_res)
-        print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {ai_reply[:30]}...")
+
+        #ai_reply = await generate_smart_response(text_msg, val_res)
+        db.pool = db_pool  # даем пул
+        db_context = await db.get_full_user_context(row['messenger_uid'])
+        print(f"📡 [ШАГ 3 ТЕСТ КОНТЕКСТА]: {db_context}")
+
+        #print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {ai_reply[:30]}...")
+        print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {db_context}...")
 
         # Запись в outbound_messages (или обновление message_logs под ваш транспорт)
         await conn.execute("""
