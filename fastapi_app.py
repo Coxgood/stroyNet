@@ -95,14 +95,15 @@ async def generate_smart_response(text_msg: str, val_res: dict) -> str:
     # 1. Если локальный валидатор определил болталку
     if intent_type == "chitchat":
         print(" [FastAPI] Режим: Болталка. Запуск со стандартным промптом.")
+        # Передаем просто строку, без именованных аргументов system_prompt=
         basic_prompt = "Ты — вежливый строительный ИИ-помощник компании ООО СК «ЕЛС». Ответь дружелюбно."
-        return await parse_with_ollama(text_msg, system_prompt=basic_prompt)
+        return await parse_with_ollama(f"{basic_prompt}\n\n{text_msg}")
 
     # 2. Если это конкретная строительная задача (заказ техники, геодезия, материалы)
     elif intent_type == "construction_task":
         print(" [FastAPI] Режим: Строительная задача. Применяем жесткий контекст Константина.")
 
-        # 🚀 НАШИ ЖЕСТКИЕ ПЕРЕМЕННЫЕ КОНТЕКСТА ПОД ВАШИ ДАННЫЕ:
+        # НАШИ ЖЕСТКИЕ ПЕРЕМЕННЫЕ КОНТЕКСТА:
         mock_user_name = "Константин"
         mock_role = "геодезист"
         mock_company = "ООО СК «ЕЛС»"
@@ -119,14 +120,17 @@ async def generate_smart_response(text_msg: str, val_res: dict) -> str:
             f"Отвечай строго одной живой, человеческой фразой (не более 20 слов)."
         )
 
-        # Передаем текст прораба/геодезиста и собранный промпт в ollama_client
-        return await parse_with_ollama(text=text_msg, system_prompt=build_system_prompt)
+        # Склеиваем промпт и сообщение прораба перед отправкой
+        full_prompt = f"{build_system_prompt}\n\nСообщение прораба: {text_msg}\nОтвет диспетчера:"
+
+        # 🚀 ИСПРАВЛЕНИЕ: Передаем аргумент позиционно (просто переменную full_prompt)
+        return await parse_with_ollama(full_prompt)
 
     # 3. Если тип неизвестен
     else:
         print(" [FastAPI] Режим: Неизвестный контекст. Базовая обработка.")
         fallback_prompt = "Ты — ИИ-диспетчер строительной логистики компании ООО СК «ЕЛС». Отвечай вежливо и по делу."
-        return await parse_with_ollama(text_msg, system_prompt=fallback_prompt)
+        return await parse_with_ollama(f"{fallback_prompt}\n\n{text_msg}")
 
 
 # Функция, которая моментально сработает при появлении строки в message_logs
