@@ -166,13 +166,6 @@ async def process_new_message(payload_id: str):
 
         print(f"🔹 [ШАГ 4] Данные Many-to-Many успешно получены.")
 
-        # 🚀 ИСПРАВЛЕНИЕ: Передаем наше живое соединение conn в параметр pool по имени!
-        db_context = await db.get_full_user_context(row['messenger_uid'], pool=conn)
-
-        print(f"📡 [ШАГ 3 ТЕСТ КОНТЕКСТА]: {db_context}")
-
-        print(f"🔹 [ШАГ 4] Данные Many-to-Many успешно получены.")
-
         # Шаг 5: Запись в outbound_messages
         await conn.execute("""
                     INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
