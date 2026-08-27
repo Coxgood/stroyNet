@@ -97,7 +97,7 @@ async def generate_smart_response(text_msg: str, val_res: dict, messenger_uid: s
     # (Предполагаем, что класс инициализирован как db, либо делаем: db = DBManager(); db.pool = db_pool)
     from database import db
 
-    context = await db.get_full_user_context(messenger_uid)
+    context = await db.get_full_user_context(messenger_uid, pool=db_pool)
 
     # СТРОГИЙ ФИЛЬТР: Если метода не вернул данные (нет в белом списке) — отказ
     if not context:
@@ -196,7 +196,7 @@ async def process_new_message(payload_id: str):
         print(f"🎉 [ШАГ 5] Успешно записано в outbound_messages!")
 
     except Exception as e:
-        print(f"❌ [КРИШЕК] Ошибка в процессе обработки ID {log_id}: {e}")
+        print(f"❌ [ОШИБКА] Ошибка в процессе обработки ID {log_id}: {e}")
     finally:
         if conn:
             await conn.close()

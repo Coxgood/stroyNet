@@ -42,7 +42,7 @@ class DBManager:
                 validation_level, validation_score, source_type, access_level
             )
 
-    async def get_full_user_context(self, messenger_uid: str) -> Optional[dict]:
+    async def get_full_user_context(self, messenger_uid: str, pool=None) -> Optional[dict]:
         """
         УРОВЕНЬ 3: Извлечение Many-to-Many контекста сотрудника
         и истории его последних 3 сообщений для ИИ.
