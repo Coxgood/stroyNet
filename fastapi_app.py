@@ -166,12 +166,14 @@ async def process_new_message(payload_id: str):
             VALUES ($1, $2, $3, $4, 'pending');
         """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
                            ai_reply.strip())
-        # 🚀 ШАГ 1.5: Чистый вызов функции из database.py строго в переменную
-        # ИСПРАВЛЕНИЕ: Берем row['messenger_uid'], который вы вытащили на ШАГЕ 1
+        # 🚀 ШАГ 1.5: Вызываем оригинаную функцию из database.py
         messenger_uid = row['messenger_uid']
         print(f"🔹 [ШАГ 1.5] Подтягиваем контекст из database.py для UID {messenger_uid}...")
 
-        # Передаем правильную переменную messenger_uid в аргументы функции
+        # 🎯 СИНХРОНИЗАЦИЯ НА МЕСТЕ: Железно передаем рабочий db_pool в объект db
+        db.pool = db_pool
+
+        # Теперь self.pool внутри функции 100% заполнен и не вызовет ошибку!
         db_context = await db.get_full_user_context(messenger_uid)
 
         if db_context:
