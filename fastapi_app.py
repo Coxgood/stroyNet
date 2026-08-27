@@ -184,7 +184,7 @@ async def process_new_message(payload_id: str):
         val_res = fast_surface_validate(text_msg)
 
         print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
-        ai_reply = await generate_smart_response(text_msg, val_res)
+        ai_reply = await generate_smart_response(text_msg, val_res, row['messenger_uid'])
         print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {ai_reply[:30]}...")
 
         # Запись в очередь
