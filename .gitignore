@@ -11,4 +11,6 @@ listener.log
 .DS_Store
 # Локальные скрипты для БД (не коммитить!)
 update_db.py
+update_db1.py
+read_outbound_queue.py
 *.sql
