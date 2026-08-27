@@ -89,32 +89,52 @@ async def listen_for_messages():
 # =====================================================================
 # LIFECYCLE
 # =====================================================================
-# Внутри fastapi_app.py
 
-async def generate_smart_response(text_msg: str, val_res: dict) -> str:
-    """Генерирует умный простой ответ на основе типа сообщения (СТАРТОВОЕ СОСТОЯНИЕ)."""
+async def generate_smart_response(text_msg: str, val_res: dict, db_context: dict = None) -> str:
+    """Генерирует ответ ИИ на основе типа сообщения и подсаживает Many-to-Many контекст."""
     intent_type = val_res.get("intent_type", "unknown")
 
-    # 1. Если локальный валидатор определил болталку
     if intent_type == "chitchat":
         print(" [FastAPI] Режим: Болталка. Ollama отвечает вежливо.")
         return await parse_with_ollama(text_msg, mode="chat")
 
-    # 2. Если это конкретная строительная задача (заказ бетона, арматуры и т.д.)
     elif intent_type == "construction_task":
-        print(" [FastAPI] Режим: Строительная задача. Применяем базовый промпт на 20 слов.")
+        # 🚀 ПОДПИСЫВАЕМ НАШ СВЕЖИЙ КОНТЕКСТ ИЗ БД:
+        if db_context:
+            print(" [FastAPI] Режим: Строительная задача. Собираем промпт на основе данных из БД.")
+            user_name = db_context.get("first_name", "сотрудник")
+            user_role = db_context.get("positions", "прораб")
+            user_company = db_context.get("organizations", "ООО СК «ЕЛС»")
+            site_name = db_context.get("objects", "ЖК «Соцветие»")
 
-        # Наш стартовый автономный промпт диспетчера
-        strict_prompt = (
-            "Ты — диспетчер строительной логистики. Твоя задача — подтвердить приём заявки. "
-            "Отвечай одной фразой (не более 20 слов)."
-        )
+            # Специфика видов работ на основе компании Максима (ООО "Наследие")
+            work_profile = "каменная кладка стен на 1 и 2 блок-секциях" if "Наследие" in user_company else "выполнение строительно-монтажных работ"
+            material_profile = "строительный раствор (заявки на раствор)" if "Наследие" in user_company else "строительные материалы"
 
-        # Склеиваем промпт и сообщение прораба
-        full_prompt = f"{strict_prompt}\n\nСообщение прораба: {text_msg}\nОтвет диспетчера:"
-        return await parse_with_ollama(full_prompt)
+            build_system_prompt = (
+                f"Ты — профессиональный ИИ-диспетчер строительной компании «StroyNet».\n"
+                f"Сейчас ты общаешься с сотрудником компании {user_company}.\n"
+                f"Его имя: {user_name}, должность: {user_role}. Его объект: {site_name}.\n"
+                f"ДАННЫЙ ЧАТ НАПРАВЛЕН СТРОГО НА: {material_profile}.\n"
+                f"Текущие выполняемые работы подрядчика на объекте: {work_profile}.\n\n"
+                f"ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА ДЛЯ ОТВЕТА ДИСПЕТЧЕРА:\n"
+                f"1. ОБЯЗАТЕЛЬНО начни свой ответ с приветствия: 'Здравствуйте, {user_name}!'.\n"
+                f"2. Четко подтверди приём текущей заявки на {material_profile} для объекта {site_name} от лица компании {user_company}.\n"
+                f"3. Отвечай строго одной живой фразой (не более 20 слов)."
+            )
+            full_prompt = f"{build_system_prompt}\n\nТекущее сообщение прораба: {text_msg}\nОтвет диспетчера:"
+            return await parse_with_ollama(full_prompt)
 
-    # 3. Неизвестный контекст
+        # Если контекста вдруг нет, оставляем наш стабильный простой промпт
+        else:
+            print(" [FastAPI] Режим: Строительная задача. Контекст пуст, применяем базовый промпт.")
+            strict_prompt = (
+                "Ты — диспетчер строительной логистики. Твоя задача — подтвердить приём заявки. "
+                "Отвечай одной фразой (не более 20 слов)."
+            )
+            full_prompt = f"{strict_prompt}\n\nСообщение прораба: {text_msg}\nОтвет диспетчера:"
+            return await parse_with_ollama(full_prompt)
+
     else:
         print(" [FastAPI] Режим: Неизвестный контекст. Автономный ответ.")
         return await parse_with_ollama(text_msg, mode="chat")
@@ -166,12 +186,14 @@ async def process_new_message(payload_id: str):
 
         print(f"🔹 [ШАГ 4] Данные Many-to-Many успешно получены.")
 
+        ai_reply = await generate_smart_response(text_msg, val_res, db_context)
+        print(f"🔹 [ШАГ 4.5] Ответ от Ollama получен: {ai_reply[:30]}...")
+
         # Шаг 5: Запись в outbound_messages
         await conn.execute("""
                     INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
                     VALUES ($1, $2, $3, $4, 'pending');
-                """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
-                           str(db_context))
+                """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'], ai_reply.strip())
 
         print(f"🔹 [ШАГ 5] Успешно записано в outbound_messages!")
 
