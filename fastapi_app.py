@@ -148,7 +148,7 @@ async def process_new_message(payload_id: str):
         """, log_id)
 
         if not row:
-            print(f" [ШАГ 1] Строка {log_id} не найдена в базе!")
+            print(f" [ШАГ 1] Строка {log_id} не найдена в базе. conn - {conn}!")
             return
 
         messenger_uid = row['messenger_uid']
@@ -159,13 +159,15 @@ async def process_new_message(payload_id: str):
 
         print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
 
-        # 🚀 ИСПРАВЛЕНИЕ 1: Вместо пустого db_pool подставляем живое соединение conn!
-        db.pool = conn
-        db_context = await db.get_full_user_context(row['messenger_uid'])
-        print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
-
-        # 🚀 ЧИСТЫЙ И ПРОСТОЙ ВЫЗОВ: Передаем uid и коннект по порядку
+        # 🚀 ЖЕЛЕЗОБЕТОННЫЙ ВЫЗОВ: Передаем ровно два аргумента по порядку, как просит Python
         db_context = await db.get_full_user_context(row['messenger_uid'], conn)
+
+        print(f"📡 [ШАГ 3 ТЕСТ КОНТЕКСТА]: {db_context}")
+
+        print(f"🔹 [ШАГ 4] Данные Many-to-Many успешно получены.")
+
+        # 🚀 ИСПРАВЛЕНИЕ: Передаем наше живое соединение conn в параметр pool по имени!
+        db_context = await db.get_full_user_context(row['messenger_uid'], pool=conn)
 
         print(f"📡 [ШАГ 3 ТЕСТ КОНТЕКСТА]: {db_context}")
 
@@ -181,7 +183,7 @@ async def process_new_message(payload_id: str):
         print(f"🔹 [ШАГ 5] Успешно записано в outbound_messages!")
 
     except Exception as e:
-        print(f"❌ [КРИШЕК] Ошибка в процессе обработки ID {log_id}: {e}")
+        print(f"❌ [СБРОС] Ошибка в процессе обработки ID {log_id}: {e}")
     finally:
         if conn:
             await conn.close()
