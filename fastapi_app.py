@@ -162,22 +162,23 @@ async def process_new_message(payload_id: str):
         # 🚀 ИСПРАВЛЕНИЕ 1: Вместо пустого db_pool подставляем живое соединение conn!
         db.pool = conn
         db_context = await db.get_full_user_context(row['messenger_uid'])
+        print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
+
+        # 🚀 ЧИСТЫЙ И ПРОСТОЙ ВЫЗОВ: Передаем uid и коннект по порядку
+        db_context = await db.get_full_user_context(row['messenger_uid'], conn)
+
         print(f"📡 [ШАГ 3 ТЕСТ КОНТЕКСТА]: {db_context}")
 
         print(f"🔹 [ШАГ 4] Данные Many-to-Many успешно получены.")
 
         # Шаг 5: Запись в outbound_messages
-        # 🚀 ИСПРАВЛЕНИЕ 2: Вместо ai_reply передаем str(db_context)
         await conn.execute("""
-            INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
-            VALUES ($1, $2, $3, $4, 'pending');
-        """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
+                    INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
+                    VALUES ($1, $2, $3, $4, 'pending');
+                """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
                            str(db_context))
 
         print(f"🔹 [ШАГ 5] Успешно записано в outbound_messages!")
-
-        # 🚀 СИНХРОНИЗАЦИЯ НА ВЫХОДЕ: Возвращаем глобальный пул на место для других функций
-        db.pool = db_pool
 
     except Exception as e:
         print(f"❌ [КРИШЕК] Ошибка в процессе обработки ID {log_id}: {e}")

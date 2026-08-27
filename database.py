@@ -42,14 +42,13 @@ class DBManager:
                 validation_level, validation_score, source_type, access_level
             )
 
-    async def get_full_user_context(self, messenger_uid: str, pool=None) -> Optional[dict]:
+    # 🚀 СТАЛО: Метод теперь принимает messenger_uid и живой коннект conn снаружи
+    async def get_full_user_context(self, messenger_uid: str, conn) -> Optional[dict]:
         """
         УРОВЕНЬ 3: Извлечение Many-to-Many контекста сотрудника
-        и истории его последних 3 сообщений для ИИ.
+        и истории его последних 3 сообщений через переданное соединение.
         """
-        if not self.pool:
-            raise Exception("БД не подключена")
-
+        # Текст вашего SQL-запроса остается АБСОЛЮТНО ТАКИМ ЖЕ
         query = """
             WITH user_data AS (
                 SELECT 
@@ -80,17 +79,18 @@ class DBManager:
             FROM user_data ud;
         """
 
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, str(messenger_uid))
-            if row:
-                return {
-                    "first_name": row["first_name"],
-                    "positions": row["positions"],
-                    "organizations": row["organizations"],
-                    "objects": row["objects"],
-                    "history": row["history"] or []
-                }
-            return None
+        # 🚀 ВМЕСТО АСКВИЗА ИЗ ПУЛА: Просто выполняем запрос напрямую через conn!
+        row = await conn.fetchrow(query, str(messenger_uid))
+
+        if row:
+            return {
+                "first_name": row["first_name"],
+                "positions": row["positions"],
+                "organizations": row["organizations"],
+                "objects": row["objects"],
+                "history": row["history"] or []
+            }
+        return None
 
     async def check_user_exists_by_uid(self, messenger_uid: str) -> bool:
         """🛡️ УРОВЕНЬ 2: Проверка допуска прораба (Демо-заглушка).
