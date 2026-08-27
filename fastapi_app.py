@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, Response, status
 from config import DATABASE_URL
 from ollama_client import parse_with_ollama
 from validators import fast_surface_validate
+from database import db
 
 
 from dotenv import load_dotenv
@@ -165,7 +166,25 @@ async def process_new_message(payload_id: str):
             VALUES ($1, $2, $3, $4, 'pending');
         """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
                            ai_reply.strip())
-        print(f"🔹 [ШАГ 5] Успешно записано в outbound_messages!")
+        # 🚀 ШАГ 1.5: Чистый вызов функции из database.py строго в переменную
+        # ИСПРАВЛЕНИЕ: Берем row['messenger_uid'], который вы вытащили на ШАГЕ 1
+        messenger_uid = row['messenger_uid']
+        print(f"🔹 [ШАГ 1.5] Подтягиваем контекст из database.py для UID {messenger_uid}...")
+
+        # Передаем правильную переменную messenger_uid в аргументы функции
+        db_context = await db.get_full_user_context(messenger_uid)
+
+        if db_context:
+            print(f"📡 [ЛОГ ДАННЫХ ИЗ DATABASE.PY УСПЕШЕН]:")
+            print(f"   - Сотрудник: {db_context.get('first_name')}")
+            print(f"   - Должность: {db_context.get('positions')}")
+            print(f"   - Компания:  {db_context.get('organizations')}")
+            print(f"   - Объект:    {db_context.get('objects')}")
+            print(f"   - Строк истории в массиве: {len(db_context.get('history', []))}")
+        else:
+            print(f"⚠️ [ЛОГ ДАННЫХ ИЗ DATABASE.PY ПУСТ]: Пользователь {messenger_uid} отсутствует в белом списке.")
+
+
 
     except Exception as e:
         print(f"❌ [КРИШЕК] Ошибка в процессе обработки ID {log_id}: {e}")
@@ -210,14 +229,14 @@ async def db_notification_listener():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Слушатель теперь надёжно крутится в main_fastapi.py,
-    # поэтому здесь мы просто пишем чистый лог старта
-    print("🚀 FastAPI Lifespan: Сетевой шлюз StroyNet запущен!")
+    global db_pool
+    # Там, где у вас создается пул (например, db_pool = await asyncpg.create_pool...)
+    print(" FastAPI Lifespan: Сетевой шлюз StroyNet запущен!")
 
+    # 🚀 СИНХРОНИЗИРУЕМ ПУЛЫ ОДИН РАЗ ПРИ СТАРТЕ:
+    db.pool = db_pool
     yield
-
-    # При выключении сервера просто пишем лог, без вызова отменённых задач
-    print("🛑 FastAPI Lifespan: Сетевой шлюз успешно остановлен.")
+    print(" FastAPI Lifespan: Сетевой шлюз успешно остановлен.")
 
 
 # Оставляем ОДНО красивое объявление приложения с заголовком
