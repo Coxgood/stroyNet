@@ -151,48 +151,33 @@ async def process_new_message(payload_id: str):
             print(f" [ШАГ 1] Строка {log_id} не найдена в базе!")
             return
 
+        messenger_uid = row['messenger_uid']
+
         text_msg = row['text']
         print(f"🔹 [ШАГ 2] Запускаю валидатор для текста: '{text_msg}'")
         val_res = fast_surface_validate(text_msg)
 
         print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
-        # 🚀 ИСПРАВЛЕНИЕ: Вызываем строго 2 базовых аргумента, без усложнений и conn!
 
-        #ai_reply = await generate_smart_response(text_msg, val_res)
-        db.pool = db_pool  # даем пул
+        # 🚀 ИСПРАВЛЕНИЕ 1: Вместо пустого db_pool подставляем живое соединение conn!
+        db.pool = conn
         db_context = await db.get_full_user_context(row['messenger_uid'])
         print(f"📡 [ШАГ 3 ТЕСТ КОНТЕКСТА]: {db_context}")
 
-        #print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {ai_reply[:30]}...")
-        print(f"🔹 [ШАГ 4] Ответ от Ollama получен: {db_context}...")
+        print(f"🔹 [ШАГ 4] Данные Many-to-Many успешно получены.")
 
-        # Запись в outbound_messages (или обновление message_logs под ваш транспорт)
+        # Шаг 5: Запись в outbound_messages
+        # 🚀 ИСПРАВЛЕНИЕ 2: Вместо ai_reply передаем str(db_context)
         await conn.execute("""
             INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
             VALUES ($1, $2, $3, $4, 'pending');
         """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'],
-                           ai_reply.strip())
-        # 🚀 ШАГ 1.5: Вызываем оригинаную функцию из database.py
-        messenger_uid = row['messenger_uid']
-        print(f"🔹 [ШАГ 1.5] Подтягиваем контекст из database.py для UID {messenger_uid}...")
+                           str(db_context))
 
-        # 🎯 СИНХРОНИЗАЦИЯ НА МЕСТЕ: Железно передаем рабочий db_pool в объект db
+        print(f"🔹 [ШАГ 5] Успешно записано в outbound_messages!")
+
+        # 🚀 СИНХРОНИЗАЦИЯ НА ВЫХОДЕ: Возвращаем глобальный пул на место для других функций
         db.pool = db_pool
-
-        # Теперь self.pool внутри функции 100% заполнен и не вызовет ошибку!
-        db_context = await db.get_full_user_context(messenger_uid)
-
-        if db_context:
-            print(f"📡 [ЛОГ ДАННЫХ ИЗ DATABASE.PY УСПЕШЕН]:")
-            print(f"   - Сотрудник: {db_context.get('first_name')}")
-            print(f"   - Должность: {db_context.get('positions')}")
-            print(f"   - Компания:  {db_context.get('organizations')}")
-            print(f"   - Объект:    {db_context.get('objects')}")
-            print(f"   - Строк истории в массиве: {len(db_context.get('history', []))}")
-        else:
-            print(f"⚠️ [ЛОГ ДАННЫХ ИЗ DATABASE.PY ПУСТ]: Пользователь {messenger_uid} отсутствует в белом списке.")
-
-
 
     except Exception as e:
         print(f"❌ [КРИШЕК] Ошибка в процессе обработки ID {log_id}: {e}")
