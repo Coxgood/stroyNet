@@ -112,15 +112,11 @@ async def generate_smart_response(text_msg: str, val_res: dict, db_context: dict
             material_profile = "строительный раствор (заявки на раствор)" if "Наследие" in user_company else "строительные материалы"
 
             build_system_prompt = (
-                f"Ты — профессиональный ИИ-диспетчер строительной компании «StroyNet».\n"
+                f"Ты — ИИ-диспетчер строительной компании «StroyNet».\n"
                 f"Сейчас ты общаешься с сотрудником компании {user_company}.\n"
                 f"Его имя: {user_name}, должность: {user_role}. Его объект: {site_name}.\n"
-                f"ДАННЫЙ ЧАТ НАПРАВЛЕН СТРОГО НА: {material_profile}.\n"
-                f"Текущие выполняемые работы подрядчика на объекте: {work_profile}.\n\n"
                 f"ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА ДЛЯ ОТВЕТА ДИСПЕТЧЕРА:\n"
-                f"1. ОБЯЗАТЕЛЬНО начни свой ответ с приветствия: 'Здравствуйте, {user_name}!'.\n"
-                f"2. Четко подтверди приём текущей заявки на {material_profile} для объекта {site_name} от лица компании {user_company}.\n"
-                f"3. Отвечай строго одной живой фразой (не более 20 слов)."
+                f"1. Приветствие: 'привет, {user_name}!'.\n"
             )
             full_prompt = f"{build_system_prompt}\n\nТекущее сообщение прораба: {text_msg}\nОтвет диспетчера:"
             return await parse_with_ollama(full_prompt)
