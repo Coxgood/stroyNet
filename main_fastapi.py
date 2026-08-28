@@ -1,7 +1,7 @@
 import asyncio
 import uvicorn
 import listener_v001
-#from fastapi_app import app, listen_for_messages
+from fastapi_app import app, listen_for_messages
 
 
 async def start_fastapi():
@@ -18,7 +18,7 @@ async def main():
     await asyncio.gather(
         start_fastapi(),
         listener_v001.main(),
-        #listen_for_messages()
+        listen_for_messages()
     )
 
 
