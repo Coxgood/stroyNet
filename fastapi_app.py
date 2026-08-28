@@ -147,43 +147,34 @@ async def process_new_message(payload_id: str):
         else:
             log_id = int(payload_str)
     except Exception as e:
-        print(f" [ФИЛЬТР] Ошибка парсинга: {e}")
         return
 
     if not log_id:
         return
 
     conn = None
-    try:
-        print(f"\n🔹 [ШАГ 1] Подключаюсь к БД для ID {log_id}")
+    try: # Подключаюсь к БД для ID
         conn = await asyncpg.connect(dsn=DATABASE_URL)
-
         row = await conn.fetchrow("""
             SELECT log_id, platform, chat_id, chat_type, messenger_uid, text, intent_type
             FROM message_logs WHERE log_id = $1;
         """, log_id)
-
         if not row:
-            print(f" [ШАГ 1] Строка {log_id} не найдена в базе. conn - {conn}!")
             return
 
         messenger_uid = row['messenger_uid']
 
         text_msg = row['text']
-        print(f"🔹 [ШАГ 2] Запускаю валидатор для текста: '{text_msg}'")
         val_res = fast_surface_validate(text_msg)
 
-        print(f"🔹 [ШАГ 3] Отправляю запрос в Ollama...")
 
         # 🚀 ЖЕЛЕЗОБЕТОННЫЙ ВЫЗОВ: Передаем ровно два аргумента по порядку, как просит Python
         db_context = await db.get_full_user_context(row['messenger_uid'], conn)
+        print(f"🔍 [ОТЛАДКА] db_context для {messenger_uid}: {db_context}")
 
-        print(f"📡 [ШАГ 3 ТЕСТ КОНТЕКСТА]: {db_context}")
-
-        print(f"🔹 [ШАГ 4] Данные Many-to-Many успешно получены.")
 
         ai_reply = await generate_smart_response(text_msg, val_res, db_context)
-        print(f"🔹 [ШАГ 4.5] Ответ от Ollama получен: {ai_reply[:30]}...")
+        print(f"🔹 [ШАГ 4.5] Ответ от Ollama получен: {ai_reply}...")
 
         # Шаг 5: Запись в outbound_messages
         await conn.execute("""
@@ -191,14 +182,11 @@ async def process_new_message(payload_id: str):
                     VALUES ($1, $2, $3, $4, 'pending');
                 """, row['platform'] or 'max_platform', row['chat_id'] or 'test_chat_777', row['messenger_uid'], ai_reply.strip())
 
-        print(f"🔹 [ШАГ 5] Успешно записано в outbound_messages!")
-
     except Exception as e:
         print(f"❌ [СБРОС] Ошибка в процессе обработки ID {log_id}: {e}")
     finally:
         if conn:
             await conn.close()
-            print("🔗 Соединение conn успешно закрыто.")
 
 
 async def db_notification_listener():
