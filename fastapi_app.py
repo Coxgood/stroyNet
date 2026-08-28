@@ -58,7 +58,7 @@ async def handle_new_message(connection, pid, channel, payload):
     except Exception as e:
         print(f"❌ [FastAPI] Ошибка обработки сообщения: {e}")
 
-
+"""
 async def listen_for_messages():
     print("🔥 listen_for_messages() вызвана")
 
@@ -85,7 +85,7 @@ async def listen_for_messages():
             print(f"⚠️ Ошибка слушателя БД ({e}). Переподключение через 5 секунд...")
             await asyncio.sleep(5)
 
-
+"""
 # =====================================================================
 # LIFECYCLE
 # =====================================================================
