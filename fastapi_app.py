@@ -164,7 +164,7 @@ async def process_new_message(payload_id: str):
             return
 
         current_chat_type = row['chat_type']
-        if current_chat_type in ["group", "channel"]:
+        if current_chat_type in ["group", "channel", "chat"]:
             print(f"🤫 [СКИП] Сообщение {log_id} из группы/канала ({current_chat_type}). Сохранено для отчетов, обработка Ollama пропущена.")
             return
 
