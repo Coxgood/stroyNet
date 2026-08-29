@@ -94,14 +94,12 @@ async def process_updates(updates: dict, pool: asyncpg.Pool):
         if event.get("update_type") == "message_created" and event.get("message"):
             msg = event["message"]
 
-            # 🚨 НАШ ЖЕСТКИЙ ФИЛЬТР ГРУПП:
             # Извлекаем тип чата из объекта получателя (recipient)
             recipient = msg.get("recipient", {})
             chat_type = recipient.get("chat_type")
 
-            # Если это не личный диалог ("dialog"), полностью сбрасываем событие.
-            # Бот проигнорирует группу, не запишет строку в базу и не вызовет Ollama!
-            if chat_type != "dialog":
+            # Бот проигнорирует группу, запишет строку в базу и не вызовет Ollama!
+            if chat_type not in ["dialog", "group", "channel"]:
                 continue
 
             user_id = str(msg.get("sender", {}).get("user_id", ""))
