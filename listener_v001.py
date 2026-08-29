@@ -49,7 +49,7 @@ async def ensure_employee_exists(pool, user_id, first_name, last_name):
             )
             return new_id
 
-async def save_inbound_log(pool, chat_id, messenger_uid, text, **kwargs):
+async def save_inbound_log(pool, chat_id, messenger_uid, text, chat_type='private',**kwargs):
     query = """
         INSERT INTO message_logs (
             platform, chat_id, chat_type, messenger_uid, direction, text,
@@ -123,6 +123,7 @@ async def process_updates(updates: dict, pool: asyncpg.Pool):
                 print(f"💬 Текст: {text[:100]}...")
                 await save_inbound_log(
                     pool, chat_id, user_id, text,
+                    chat_type=chat_type,
                     intent_type='transaction',
                     confidence=80,
                     priority=5,
