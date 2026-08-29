@@ -90,6 +90,12 @@ async def process_updates(updates: dict, pool: asyncpg.Pool):
 
     print(f"📦 Обработка {len(events)} событий")
 
+    # 🚨 НАШ ПЕРЕХВАТ СЫРОЙ СТРОКИ:
+    # Печатаем вообще всё, что прислал сервер мессенджера
+    print("================== [СЫРОЙ ВХОДЯЩИЙ ПАКЕТ МАКС] ==================")
+    print(json.dumps(updates, ensure_ascii=False, indent=2))
+    print("=================================================================")
+
     for event in events:
         if event.get("update_type") == "message_created" and event.get("message"):
             msg = event["message"]
