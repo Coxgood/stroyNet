@@ -105,7 +105,7 @@ async def process_updates(updates: dict, pool: asyncpg.Pool):
             chat_type = recipient.get("chat_type")
 
             # Бот проигнорирует группу, запишет строку в базу и не вызовет Ollama!
-            if chat_type not in ["dialog", "group", "channel"]:
+            if chat_type not in ["dialog", "chat"]:
                 continue
 
             user_id = str(msg.get("sender", {}).get("user_id", ""))
