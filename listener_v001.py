@@ -64,7 +64,7 @@ async def save_inbound_log(pool, chat_id, messenger_uid, text, chat_type='privat
             print(f"🔗 Соединение с БД получено")
             result = await conn.execute(
                 query,
-                'max', chat_id, 'private', messenger_uid, 'inbound', text,
+                'max', chat_id, chat_type, messenger_uid, 'inbound', text,
                 kwargs.get('intent_type', 'transaction'),
                 kwargs.get('confidence', 80),
                 kwargs.get('priority', 5),
