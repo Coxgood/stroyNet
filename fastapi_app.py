@@ -160,6 +160,8 @@ async def process_new_message(payload_id: str):
             SELECT log_id, platform, chat_id, chat_type, messenger_uid, text, intent_type
             FROM message_logs WHERE log_id = $1;
         """, log_id)
+        # ОТЛАДКА ТИ ЧАТА
+        print(f"🔍 [ОТЛАДКА] Сообщение {log_id}: chat_type={row['chat_type']}, messenger_uid={row['messenger_uid']}")
         if not row:
             return
 

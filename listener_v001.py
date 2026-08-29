@@ -107,7 +107,8 @@ async def process_updates(updates: dict, pool: asyncpg.Pool):
             last_name = msg.get("sender", {}).get("last_name", "Новый")
             chat_id = str(recipient.get("chat_id", ""))
 
-            print(f"📩 Личное сообщение от {first_name} (ID: {user_id})")
+            # отладка пишем в лог имя ID тип чата
+            print(f"📩 Личное сообщение от {first_name} (ID: {user_id}) тип чата:{chat_type}")
 
             # Регистрируем сотрудника
             employee_id = await ensure_employee_exists(pool, user_id, first_name, last_name)
