@@ -153,6 +153,7 @@ async def process_new_message(payload_id: str):
         return
 
     conn = None
+
     try: # Подключаюсь к БД для ID
         conn = await asyncpg.connect(dsn=DATABASE_URL)
         row = await conn.fetchrow("""
@@ -160,6 +161,11 @@ async def process_new_message(payload_id: str):
             FROM message_logs WHERE log_id = $1;
         """, log_id)
         if not row:
+            return
+
+        current_chat_type = row['chat_type']
+        if current_chat_type in ["group", "channel"]:
+            print(f"🤫 [СКИП] Сообщение {log_id} из группы/канала ({current_chat_type}). Сохранено для отчетов, обработка Ollama пропущена.")
             return
 
         messenger_uid = row['messenger_uid']

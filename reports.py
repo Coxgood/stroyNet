@@ -6,34 +6,43 @@ from ollama_client import parse_with_ollama
 
 async def get_latest_chat_log(limit: int = 30) -> tuple[str | None, datetime | None]:
     """
-    Выгружает ровно N последних входящих сообщений без жесткой привязки к датам.
-    Фильтр по ключевым словам убран, чтобы не потерять сообщения 'Отмена' и 'Корректировка'.
+    Выгружает последние N профильных сообщений СТРОГО из групповых чатов и каналов,
+    полностью игнорируя личные диалоги ('dialog').
     """
-    query = """
-        SELECT
-            m.text,
-            m.created_at,
-            e.first_name || ' ' || e.last_name AS full_name,
-            o.title AS organization
-        FROM message_logs m
-        LEFT JOIN employees e ON e.phone = 'max_' || m.messenger_uid
-        LEFT JOIN employment emp ON e.employee_id = emp.employee_id
-        LEFT JOIN organizations o ON emp.organization_id = o.organization_id
-        WHERE m.direction = 'inbound'
-        ORDER BY m.created_at DESC
-        LIMIT $1;
-    """
-    async with asyncpg.create_pool(DATABASE_URL) as pool:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, limit)
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        query = """
+            SELECT
+                m.text,
+                m.created_at,
+                e.first_name || ' ' || e.last_name AS full_name,
+                o.title AS organization
+            FROM message_logs m
+            LEFT JOIN employees e ON e.phone = 'max_' || m.messenger_uid
+            LEFT JOIN employment emp ON e.employee_id = emp.employee_id
+            LEFT JOIN organizations o ON emp.organization_id = o.organization_id
+            WHERE m.direction = 'inbound'
+              AND m.chat_type IN ('group', 'channel') -- 🚨 ФИЛЬТР: Сбор только из групп
+              AND (
+                   m.text ILIKE '%бетон%' 
+                OR m.text ILIKE '%раствор%' 
+                OR m.text ILIKE '%пб%'
+                OR m.text ILIKE '%плит%'
+                OR m.text ILIKE '%отмен%' 
+                OR m.text ILIKE '%коррект%'
+              )
+            ORDER BY m.created_at DESC
+            LIMIT $1;
+        """
+        rows = await conn.fetch(query, limit)
+    finally:
+        await conn.close()
 
     if not rows:
         return None, None
 
-    # Разворачиваем в хронологический порядок (было DESC для LIMIT, делаем ASC для ИИ)
+    # Хронологический порядок для ИИ
     rows = list(reversed(rows))
-
-    # Находим самый свежий таймстемп в этой выборке (точка актуальности чата)
     last_msg_timestamp = max(row['created_at'] for row in rows)
 
     lines = []
@@ -51,55 +60,59 @@ async def save_outbound_message(text: str):
         INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
         VALUES ('max', '436624187', '266417155', $1, 'pending');
     """
-    async with asyncpg.create_pool(DATABASE_URL) as pool:
-        async with pool.acquire() as conn:
-            await conn.execute(query, text)
-            print("📤 Сообщение сохранено в outbound_messages")
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute(query, text)
+        print("📤 Сообщение успешно сохранено в outbound_messages")
+    finally:
+        await conn.close()
 
 
 async def send_report(shift: str, until_hour: int):
-    """Формирует и отправляет оперативный отчёт на основе скользящего окна чата."""
-    print(f"📊 Запуск отчёта под слот: {shift}")
+    """Формирует оперативный технический отчет по данным групповых чатов."""
+    print(f"📊 Запуск генерации отчёта по ГРУППАМ под слот: {shift}")
 
-    # Получаем срез последних сообщений и реальное время последней активности в чате
     chat_log, last_active_time = await get_latest_chat_log(limit=30)
 
     if not chat_log or not last_active_time:
-        await save_outbound_message(f"📭 В чате нет сообщений для формирования отчета на {shift}.")
+        await save_outbound_message(f"📭 В групповых чатах не обнаружено активных заявок на бетон/раствор.")
         return
 
-    # Логика выходных: проверяем день недели относительно ПОСЛЕДНЕГО сообщения, а не сервера.
-    # Если база замерла в субботу, мы обрабатываем субботний контекст, а не пустой понедельник.
-    weekday_num = last_active_time.weekday()  # 5 - Суббота, 6 - Воскресенье
-
-    # Если вы не работаете по воскресеньям, блокируем генерацию
-    if weekday_num == 6:
+    if last_active_time.weekday() == 6:
         await save_outbound_message(
-            f"📅 По данным чата сейчас выходной день ({last_active_time.strftime('%A, %Y-%m-%d')}). "
+            f"📅 Согласно логам групп сейчас воскресенье ({last_active_time.strftime('%Y-%m-%d')}). "
             f"Отчёт на {shift} не формируется."
         )
         return
 
     prompt = f"""
-Ты — «StroyNet Диспетчер», жесткий и опытный ИИ-инженер строительной логистики. 
-Твоя задача — собрать финальные, актуальные заявки на БЕТОН и РАСТВОР под целевой рабочий слот: {shift}.
+Ты — «StroyNet Диспетчер», автоматизированный ИИ-модуль учета строительной логистики. 
+Твоя цель: составить сводный отчет по материалам на основе выписки из ГРУППОВЫХ чатов.
 
-Вот выписка последних 30 сообщений из чата (точка актуальности чата: {last_active_time.strftime('%Y-%m-%d %H:%M')}):
+ЦЕЛЕВОЙ СЛОТ ДОСТАВКИ: {shift.upper()}
+ТОЧКА АКТУАЛЬНОСТИ ЛОГА (Последнее групповое сообщение): {last_active_time.strftime('%Y-%m-%d %H:%M')}
+
+ВЫПИСКА ИЗ ОБЩИХ ЧАТОВ ПРОРАБОВ:
 {chat_log}
 
-ИНСТРУКЦИЯ ПО АНАЛИЗУ ЧАТА:
-1. Выдели только целевые заявки на БЕТОН и РАСТВОР, которые относятся к слоту "{shift}" (например, если слот ОБЕД, ищи маркеры "на обед", "к обеду", "12:00").
-2. Строго сопоставляй таймстемпы сообщений. Если прораб написал "на утро" вечером, это заявка на утро следующего дня.
-3. Разреши противоречия (ЦЕПОЧКА ВРЕМЕНИ):
-   - Если за заявкой от конкретного прораба следует сообщение "Отмена" или "Корректировка" от него же — примени изменения.
-   - Схлопни промежуточный хаос. В отчёт должно попасть только финальное решение человека. Отрезанные/отмененные заявки полностью удаляй.
-4. Сгруппируй результат по Подрядчикам (Организациям) и Конструкциям/Секциям, просуммируй объемы в м³.
-5. Если целевых заявок на "{shift}" нет или они все были аннулированы — верни ровно одну строку: "Заявок на {shift} за период не найдено."
+ОБЯЗАТЕЛЬНЫЙ АЛГОРИТМ ОБРАБОТКИ:
+1. Выпиши ВСЕ упоминания бетона, раствора или ЖБИ-плит.
+2. Проверь время доставки, которое запрашивает прораб:
+   - Если указано "на утро", "к 8 часам", "08:00" -> это слот УТРО.
+   - Если указано "на обед", "к 12:00", "12:00" -> это слот ОБЕД.
+   - Если прораб пишет поздно вечером "на утро" -> это заявка на утро следующего дня.
+3. ОБРАБОТКА ОТМЕН И КОРРЕКТИРОВОК:
+   - Если один и тот же прораб сначала заказал материал, а затем написал "Отмена" или "Корректировка" -> примени изменения и удали аннулированную позицию.
+4. Выведи результат строго в формате:
+   Подрядчик (Организация): [Название]
+   Материал/Марка: [Что везем]
+   Объем: [Количество] шт/кубов
+   Конструкция/Захватка: [Куда укладываем, если указано]
 
-Выдай сухой, структурированный технический отчет без вежливости, смайликов и вводных слов.
+Внимание: Если в предоставленном логе действительно нет ни одной живой (не отмененной) заявки на слот {shift.upper()}, только тогда верни фразу: "Заявок на {shift} за период не найдено."
 
 Отчёт:
 """
 
     reply = await parse_with_ollama(prompt)
-    await save_outbound_message(f"📋 **СВОДКА НА {shift.upper()}**\n\n{reply}")
+    await save_outbound_message(f"📋 **СВОДКА ИЗ ГРУПП НА {shift.upper()}**\n\n{reply}")
