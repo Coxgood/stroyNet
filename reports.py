@@ -66,7 +66,7 @@ async def send_report(shift: str, until_hour: int, target_day: str = "today"):
 
     keyword = "завтра" if target_day == "tomorrow" else "сегодня"
 
-    chat_log, last_time = await get_chat_log(target_date, until_hour, keyword)
+    chat_log, last_time = await get_chat_log(limit=30)
 
     if not chat_log:
         await save_outbound_message(f"📭 Заявок на {shift} ({target_day}) не найдено.")
