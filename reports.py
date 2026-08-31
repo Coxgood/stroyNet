@@ -95,7 +95,8 @@ async def send_report(shift: str, until_hour: int, target_day: str = "today"):
             print("⚠️ Объём выше среднего (>3 м³)")
 
     prompt = fprompt = f"""
-Ты — диспетчер стройки. Составь отчёт по заявкам на {shift.upper()} ({target_day}).
+Составь отчёт по заявкам на {shift.upper()} ({target_day}).
+
 Вот сообщения прорабов за последние 30 сообщений:
 {chat_log}
 === ИНСТРУКЦИЯ ===
