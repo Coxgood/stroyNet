@@ -7,13 +7,8 @@ from ollama_client import parse_with_ollama
 CHAT_ID = '-72493697010953'  # ID общего чата прорабов
 
 
-async def get_chat_log(target_date, until_hour, keyword, limit=30):
-    """Собирает сообщения за указанную дату до указанного часа."""
-    start = datetime.combine(target_date, datetime.min.time())
-    end = datetime.combine(target_date, datetime.min.time().replace(hour=until_hour))
-
-    print(f"🔍 Собираем сообщения с {start} по {end}, ключевое слово: '{keyword}'")
-
+async def get_chat_log(limit: int = 30) -> tuple:
+    """Собирает последние N сообщений из группового чата (без фильтра по дате)."""
     query = """
         SELECT 
             m.text, 
@@ -26,18 +21,13 @@ async def get_chat_log(target_date, until_hour, keyword, limit=30):
         LEFT JOIN organizations o ON emp.organization_id = o.organization_id
         WHERE m.direction = 'inbound'
           AND m.chat_id = $1
-          AND m.created_at BETWEEN $2 AND $3
           AND (m.text ILIKE '%бетон%' OR m.text ILIKE '%раствор%')
-          AND (m.text ILIKE '%' || $4 || '%')
         ORDER BY m.created_at DESC
-        LIMIT $5;
+        LIMIT $2;
     """
-
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
-            rows = await conn.fetch(query, CHAT_ID, start, end, keyword, limit)
-
-    print(f"🔍 Найдено сообщений: {len(rows)}")
+            rows = await conn.fetch(query, CHAT_ID, limit)
 
     if not rows:
         return None, None
