@@ -1,14 +1,17 @@
 # reports.py
 import asyncpg
+import json
+import re
 from datetime import datetime, timedelta
+from collections import defaultdict
 from config import DATABASE_URL
 from ollama_client import parse_with_ollama
 
 CHAT_ID = '-72493697010953'  # ID общего чата прорабов
+LIMIT = 20  # количество сообщений для анализа
 
-
-async def get_chat_log(limit: int = 30) -> tuple:
-    """Собирает последние N сообщений из группового чата (без фильтра по дате)."""
+async def get_chat_log(limit: int = LIMIT) -> list:
+    """Собирает последние N сообщений из группового чата."""
     query = """
         SELECT 
             m.text, 
@@ -28,20 +31,41 @@ async def get_chat_log(limit: int = 30) -> tuple:
     async with asyncpg.create_pool(DATABASE_URL) as pool:
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, CHAT_ID, limit)
+    return rows
 
-    if not rows:
-        return None, None
 
-    chat_log = "\n".join([
-        f"[{row['created_at']}] {row['full_name']} ({row['organization']}): {row['text']}"
-        for row in rows
-    ])
+async def parse_message_to_json(text: str) -> list:
+    """Превращает одно сообщение в список JSON-заявок."""
+    prompt = f"""
+Ты — парсер строительных заявок. Преврати сообщение в JSON.
 
-    return chat_log, rows[0]['created_at'] if rows else None
+Сообщение: {text}
+
+Правила:
+1. Если в сообщении несколько заявок (на обед и вечер), верни список из нескольких JSON-объектов.
+2. Для каждой заявки укажи: shift (утро/обед/вечер), date (ДД.ММ), sections (массив с name и volume).
+3. Если заявка не распознана — верни {"error": "не распознано"}.
+
+Формат ответа (список):
+[
+  {"shift": "обед", "date": "31.08", "sections": [{"name": "6 бс", "volume": 1.5}]},
+  {"shift": "вечер", "date": "31.08", "sections": [{"name": "7-8 бс", "volume": 2.75}]}
+]
+"""
+    reply = await parse_with_ollama(prompt, max_tokens=400, temperature=0.1)
+    try:
+        # Пытаемся извлечь JSON из ответа
+        start = reply.find('[')
+        end = reply.rfind(']') + 1
+        if start != -1 and end > start:
+            return json.loads(reply[start:end])
+        return []
+    except:
+        return []
 
 
 async def save_outbound_message(text: str):
-    """Сохраняет сообщение в outbound_messages для отправки."""
+    """Сохраняет сообщение в outbound_messages."""
     query = """
         INSERT INTO outbound_messages (platform, chat_id, messenger_uid, text, status)
         VALUES ('max', '436624187', '266417155', $1, 'pending');
@@ -49,92 +73,60 @@ async def save_outbound_message(text: str):
     conn = await asyncpg.connect(DATABASE_URL)
     try:
         await conn.execute(query, text)
-        print("📤 Сообщение успешно сохранено в outbound_messages")
+        print("📤 Сообщение сохранено в outbound_messages")
     finally:
         await conn.close()
 
 
 async def send_report(shift: str, until_hour: int, target_day: str = "today"):
-    """Формирует отчёт на основе времени запуска."""
-    print(f"📊 Запуск отчёта на {shift} (до {until_hour}:00, день: {target_day})")
+    print(f"📊 Запуск отчёта на {shift} (до {until_hour}:00)")
 
-    today = datetime.now().date()
-    if target_day == "tomorrow":
-        target_date = today + timedelta(days=1)
-    else:
-        target_date = today
-
-    keyword = "завтра" if target_day == "tomorrow" else "сегодня"
-
-    chat_log, last_time = await get_chat_log(limit=12)
-
-    if not chat_log:
-        await save_outbound_message(f"📭 Заявок на {shift} ({target_day}) не найдено.")
+    rows = await get_chat_log(limit=LIMIT)
+    if not rows:
+        await save_outbound_message("📭 Сообщений не найдено.")
         return
 
-    # Проверяем объёмы (баг-детектор)
-    volumes = []
-    import re
-    for line in chat_log.split('\n'):
-        numbers = re.findall(r'(\d+[,.]?\d*)\s*м[3³]', line)
-        for v in numbers:
-            try:
-                vol = float(v.replace(',', '.'))
-                volumes.append(vol)
-            except:
-                pass
+    # Шаг 1: Парсим каждое сообщение в JSON
+    all_orders = []
+    for row in rows:
+        text = row['text']
+        print(f"🔍 Парсим: {text[:50]}...")
+        parsed = await parse_message_to_json(text)
+        if parsed:
+            all_orders.extend(parsed)
+            print(f"   ✅ Распознано: {parsed}")
+        else:
+            print(f"   ⚠️ Не распознано")
 
-    if volumes:
-        avg_vol = sum(volumes) / len(volumes)
-        max_vol = max(volumes)
-        print(f"🔍 Объёмы: {volumes}")
-        print(f"🔍 Средний: {avg_vol:.2f} м³, Максимальный: {max_vol:.2f} м³")
-        if max_vol > 6:
-            print("⚠️ Обнаружен аномальный объём (>6 м³)")
-        elif max_vol > 3:
-            print("⚠️ Объём выше среднего (>3 м³)")
+    if not all_orders:
+        await save_outbound_message("📭 Заявок не найдено.")
+        return
 
-    prompt = fprompt = f"""
-Ты — автоматическая система генерации отчетов бетонного завода. Твоя задача — проанализировать предоставленный лог сообщений и составить структурированный отчет ПО ВСЕМ ДАТАМ И ВСЕМ СМЕНАМ, которые встречаются в тексте.
+    # Шаг 2: Агрегация по дате, смене, подрядчику и секции
+    summary = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
 
-=== СЛОВАРЬ КЛАССИФИКАЦИИ СМЕН ===
-Распределяй заявки по сменам на основе времени или ключевых слов:
-- УТРО: маркеры "утро", "8:00", "8.00"
-- ОБЕД: маркеры "обед", "13:00", "13.00"
-- ВЕЧЕР: маркеры "вечер", "15:00", "15.00", "15:30"
-Если дата в сообщении явно указана как "завтра" или "на 27.08", относи запись к указанной календарной дате.
+    for order in all_orders:
+        date = order.get('date', 'unknown')
+        shift = order.get('shift', 'unknown')
+        sections = order.get('sections', [])
+        for sec in sections:
+            name = sec.get('name', 'unknown')
+            volume = sec.get('volume', 0)
+            if volume > 0:
+                summary[date][shift][name] += volume
 
-=== ЖЁСТКИЕ ПРАВИЛА АНАЛИЗА ===
-1. ХРОНОЛОГИЯ: Лог идет снизу вверх (старые записи внизу, новые вверху). Анализируй снизу вверх, чтобы корректно учитывать корректировки и отмены.
-2. НАЗВАНИЯ СЕКЦИЙ: В финальном отчете используй ТОЛЬКО следующие стандартизированные названия:
-   - "6 бс"
-   - "7-8 бс"
-   - "4,5 секция"
-   - "1бс"
-   - "2бс"
-3. ОБЪЕМЫ: Извлекай числа только перед "м³" или "м3". Если для "4,5 секция" указаны метры со звездочкой (например, "3м*"), этот объем раствора равен 0 м³ (это строительная отметка, а не кубатура).
-4. ОТМЕНЫ: Если видишь слова "отмена" или "отказ" для конкретной секции/даты/смены, её объем равен 0 м³. Например, "7-8 бс раствор отмена" обнуляет заявку этой секции на эту смену.
-5. КОРРЕКТИРОВКИ: Если на одну и ту же дату, смену и секцию есть несколько записей, бери только самую последнюю (верхнюю в логе). Предыдущие значения полностью игнорируй.
+    # Шаг 3: Формируем отчёт
+    lines = []
+    for date in sorted(summary.keys()):
+        lines.append(f"\n📅 Дата: {date}")
+        for shift_name in sorted(summary[date].keys()):
+            total_shift = sum(summary[date][shift_name].values())
+            lines.append(f"  🕒 Смена: {shift_name.upper()} (итого: {total_shift:.2f} м³)")
+            for sec, vol in summary[date][shift_name].items():
+                lines.append(f"    - {sec}: {vol:.2f} м³")
+            if total_shift > 4:
+                lines.append(f"    ⚠️ Аномалия: {total_shift:.2f} м³ > 4")
 
-=== ФОРМАТ ОТЧЁТА ===
-Выводи данные последовательно по датам (в хронологическом порядке: от старых к новым). Для каждой даты разделяй отчет по сменам (УТРО, ОБЕД, ВЕЧЕР). Используй строго следующий шаблон:
-
-Дата: [ДД.ММ]
-Смена: [УТРО / ОБЕД / ВЕЧЕР]
-  Подрядчик: [Название подрядчика, например: ИП Слепченко. Если не указан — "Общие заявки"]
-    Секция [Название]: [объём] м³
-    Итого по подрядчику: [сумма] м³
-  
-  Общий итог за смену: [сумма всех м³ за эту смену] м³
-  Аномалии (>4 м³): [- секция, объём. Если нет — "Нет"]
-  ---
-
-=== ЛОГ ДЛЯ АНАЛИЗА ===
-"""
-
-    print("🔍 Отправляем в Ollama...")
-    reply = await parse_with_ollama(prompt)
-    print(f"🔍 Ответ получен, длина: {len(reply)} символов")
-
-    await save_outbound_message(f"📋 **СВОДКА НА {shift.upper()} ({target_day})**\n\n{reply}")
+    report_text = "\n".join(lines)
+    await save_outbound_message(f"📋 **СВОДКА ЗАЯВОК**\n\n{report_text}")
     print("✅ Отчёт отправлен!")
